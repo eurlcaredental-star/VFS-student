@@ -23,7 +23,7 @@ from telegram.ext import (
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from config import TELEGRAM_BOT_TOKEN, CENTERS, TIMEZONE
+from config import TELEGRAM_BOT_TOKEN, CENTERS, TIMEZONE, ADMIN_USER_IDS
 from database import (
     init_db, add_or_update_user, subscribe_to_center, unsubscribe_from_center,
     get_user_subscriptions, get_center_status, get_historical_events, get_stats,
@@ -37,13 +37,17 @@ from briefing import (
 )
 from scheduler import setup_scheduler, check_and_alert, send_message_safe
 
+_log_handlers = [logging.StreamHandler(sys.stdout)]
+_log_file = os.path.join(os.path.dirname(__file__), "bot.log")
+try:
+    _log_handlers.append(logging.FileHandler(_log_file, encoding="utf-8"))
+except Exception:
+    pass
+
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
     level=logging.INFO,
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler(os.path.join(os.path.dirname(__file__), "bot.log"), encoding="utf-8")
-    ]
+    handlers=_log_handlers
 )
 logger = logging.getLogger(__name__)
 TZ = pytz.timezone(TIMEZONE)
@@ -437,7 +441,72 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if ":" not in data:
         return
 
-    action, value = data.split(":", 1)
+    parts = data.split(":", 2)
+    action = parts[0]
+    value = parts[1] if len(parts) > 1 else ""
+    extra = parts[2] if len(parts) > 2 else ""
+
+    if action == "bc_confirm":
+        if not is_admin(user.id):
+            await query.answer("⛔ Non autorisé", show_alert=True)
+            return
+        users = await get_all_active_users()
+        await query.edit_message_text(f"📢 Envoi en cours à {len(users)} utilisateurs...")
+        sent, failed = 0, 0
+        for uid, _ in users:
+            try:
+                await context.bot.send_message(uid, extra, parse_mode="Markdown")
+                sent += 1
+            except Exception:
+                failed += 1
+        await query.edit_message_text(
+            f"✅ *Broadcast terminé !*\n\n✉️ Envoyé : *{sent}*\n❌ Échecs : *{failed}*",
+            parse_mode="Markdown"
+        )
+        return
+
+    elif action == "bc_cancel":
+        await query.edit_message_text("❌ Broadcast annulé.")
+        return
+
+    elif action == "admin":
+        if not is_admin(user.id):
+            await query.answer("⛔ Non autorisé", show_alert=True)
+            return
+        if value == "stats":
+            await query.answer()
+            await cmd_stats_from_query(query)
+            return
+        elif value == "check":
+            await query.edit_message_text("🔍 Vérification VFS en cours...")
+            from scheduler import check_and_alert as do_check
+            await do_check()
+            await query.edit_message_text("✅ Vérification terminée ! Résultats dans les logs.")
+            return
+        elif value == "broadcast_help":
+            await query.edit_message_text(
+                "📢 *Broadcast*\n\nUtilise la commande :\n`/broadcast Ton message ici`",
+                parse_mode="Markdown"
+            )
+            return
+        elif value == "logs":
+            events = await get_historical_events(limit=5)
+            if events:
+                lines = ["📋 *5 dernières ouvertures détectées :*\n"]
+                for e in events:
+                    center = CENTERS.get(e["center_code"], {})
+                    name = center.get("name", e["center_code"])
+                    flag = center.get("flag", "📍")
+                    try:
+                        dt = datetime.fromisoformat(e["detected_at"])
+                        date_str = dt.strftime("%d/%m/%Y %H:%M")
+                    except Exception:
+                        date_str = e["detected_at"]
+                    lines.append(f"• {flag} *{name}* — {date_str}")
+                await query.edit_message_text("\n".join(lines), parse_mode="Markdown")
+            else:
+                await query.edit_message_text("Aucune ouverture enregistrée pour le moment.")
+            return
 
     if action == "sub":
         if value == "ALL":
@@ -556,6 +625,173 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await cmd_help(update, context)
 
 
+def is_admin(user_id: int) -> bool:
+    return user_id in ADMIN_USER_IDS
+
+
+async def _build_stats_text() -> str:
+    stats = await get_stats()
+    events = await get_historical_events(limit=10)
+    center_status_lines = []
+    for code, info in CENTERS.items():
+        status = await get_center_status(code)
+        if status:
+            last = status["last_checked"] or "jamais"
+            try:
+                dt = datetime.fromisoformat(last)
+                last = dt.strftime("%d/%m %H:%M")
+            except Exception:
+                pass
+            indicator = "🟢" if status["has_slots"] else "🔴"
+            center_status_lines.append(f"  {indicator} {info['flag']} {info['name']} — vérifié {last}")
+        else:
+            center_status_lines.append(f"  ⚪ {info['flag']} {info['name']} — pas encore vérifié")
+    from scheduler import get_scheduler
+    sched = get_scheduler()
+    sched_status = "✅ Actif" if sched and sched.running else "❌ Arrêté"
+    return f"""📊 *STATISTIQUES ADMIN — VFS Italy Monitor*
+
+━━━━━━━━━━━━━━━━━━━━
+👥 *Utilisateurs*
+   • Total actifs : *{stats['total_users']}*
+   • Abonnements actifs : *{stats['total_subscriptions']}*
+
+📡 *Monitoring*
+   • Ouvertures détectées (total) : *{stats['total_slot_events']}*
+   • Planificateur : {sched_status}
+
+🏙️ *Statut des centres*
+{"".join(chr(10) + l for l in center_status_lines)}
+
+━━━━━━━━━━━━━━━━━━━━
+🤖 *{BOT_NAME}* v{BOT_VERSION}
+🕐 {datetime.now(TZ).strftime('%d/%m/%Y %H:%M:%S')}""".strip()
+
+
+async def cmd_stats_from_query(query):
+    text = await _build_stats_text()
+    try:
+        await query.edit_message_text(text, parse_mode="Markdown")
+    except Exception:
+        await query.edit_message_text(text.replace("*", "").replace("_", ""))
+
+
+async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ Accès réservé à l'administrateur.")
+        return
+
+    msg = await update.message.reply_text("📊 Chargement des statistiques...")
+    stats = await get_stats()
+    events = await get_historical_events(limit=50)
+    recent_centers = {}
+    for e in events[:10]:
+        c = e["center_code"]
+        if c not in recent_centers:
+            recent_centers[c] = e["detected_at"]
+
+    center_status_lines = []
+    for code, info in CENTERS.items():
+        status = await get_center_status(code)
+        if status:
+            last = status["last_checked"] or "jamais"
+            try:
+                dt = datetime.fromisoformat(last)
+                last = dt.strftime("%d/%m %H:%M")
+            except Exception:
+                pass
+            indicator = "🟢" if status["has_slots"] else "🔴"
+            center_status_lines.append(f"  {indicator} {info['flag']} {info['name']} — vérifié {last}")
+        else:
+            center_status_lines.append(f"  ⚪ {info['flag']} {info['name']} — pas encore vérifié")
+
+    from scheduler import get_scheduler
+    sched = get_scheduler()
+    sched_status = "✅ Actif" if sched and sched.running else "❌ Arrêté"
+
+    text = f"""
+📊 *STATISTIQUES ADMIN — VFS Italy Monitor*
+
+━━━━━━━━━━━━━━━━━━━━
+👥 *Utilisateurs*
+   • Total actifs : *{stats['total_users']}*
+   • Abonnements actifs : *{stats['total_subscriptions']}*
+
+📡 *Monitoring*
+   • Ouvertures détectées (total) : *{stats['total_slot_events']}*
+   • Planificateur : {sched_status}
+
+🏙️ *Statut des centres*
+{"".join(chr(10) + l for l in center_status_lines)}
+
+━━━━━━━━━━━━━━━━━━━━
+🤖 *{BOT_NAME}* v{BOT_VERSION}
+🕐 {datetime.now(TZ).strftime('%d/%m/%Y %H:%M:%S')}
+""".strip()
+
+    await msg.edit_text(text, parse_mode="Markdown")
+
+
+async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ Accès réservé à l'administrateur.")
+        return
+
+    if not context.args:
+        await update.message.reply_text(
+            "📢 *Broadcast*\n\nUsage : `/broadcast Votre message ici`\n\n"
+            "Le message sera envoyé à tous les utilisateurs actifs.",
+            parse_mode="Markdown"
+        )
+        return
+
+    message_text = " ".join(context.args)
+    users = await get_all_active_users()
+
+    if not users:
+        await update.message.reply_text("❌ Aucun utilisateur actif trouvé.")
+        return
+
+    confirm_keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(f"✅ Envoyer à {len(users)} utilisateurs", callback_data=f"bc_confirm::{message_text[:200]}"),
+            InlineKeyboardButton("❌ Annuler", callback_data="bc_cancel::"),
+        ]
+    ])
+
+    await update.message.reply_text(
+        f"📢 *Aperçu du broadcast :*\n\n{message_text}\n\n"
+        f"👥 Sera envoyé à *{len(users)}* utilisateur(s).",
+        parse_mode="Markdown",
+        reply_markup=confirm_keyboard
+    )
+
+
+async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ Accès réservé à l'administrateur.")
+        return
+
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📊 Statistiques", callback_data="admin:stats"),
+            InlineKeyboardButton("🔍 Check VFS maintenant", callback_data="admin:check"),
+        ],
+        [
+            InlineKeyboardButton("📢 Broadcast", callback_data="admin:broadcast_help"),
+            InlineKeyboardButton("📋 Logs récents", callback_data="admin:logs"),
+        ],
+    ])
+
+    await update.message.reply_text(
+        f"🔧 *PANNEAU ADMIN*\n\n"
+        f"Bienvenue, *{update.effective_user.first_name}* !\n\n"
+        f"Que veux-tu faire ?",
+        parse_mode="Markdown",
+        reply_markup=keyboard
+    )
+
+
 async def post_init(application: Application):
     """Setup bot after init"""
     await init_db()
@@ -617,6 +853,9 @@ def main():
     app.add_handler(CommandHandler("briefing_on", lambda u, c: cmd_togglebriefing(u, c)))
     app.add_handler(CommandHandler("briefing_off", lambda u, c: cmd_togglebriefing(u, c)))
     app.add_handler(CommandHandler("help", cmd_help))
+    app.add_handler(CommandHandler("stats", cmd_stats))
+    app.add_handler(CommandHandler("broadcast", cmd_broadcast))
+    app.add_handler(CommandHandler("admin", cmd_admin))
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 

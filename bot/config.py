@@ -7,6 +7,9 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 VFS_EMAIL = os.getenv("VFS_EMAIL", "")
 VFS_PASSWORD = os.getenv("VFS_PASSWORD", "")
 
+_admin_ids_raw = os.getenv("ADMIN_USER_IDS", "")
+ADMIN_USER_IDS = [int(x.strip()) for x in _admin_ids_raw.split(",") if x.strip().isdigit()]
+
 DB_PATH = os.getenv("DB_PATH", os.path.join(os.path.dirname(os.path.abspath(__file__)), "vfs_bot.db"))
 
 CHECK_INTERVAL_SECONDS = int(os.getenv("CHECK_INTERVAL", "120"))
