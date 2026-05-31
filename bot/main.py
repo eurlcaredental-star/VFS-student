@@ -448,45 +448,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     value = parts[1] if len(parts) > 1 else ""
     extra = parts[2] if len(parts) > 2 else ""
 
-    if action == "bc_confirm":
-        if not is_admin(user.id):
-            await query.answer("⛔ Non autorisé", show_alert=True)
-            return
-        # Récupérer le message stocké dans bot_data
-        try:
-            admin_id = int(value)
-        except Exception:
-            admin_id = user.id
-        pending = context.application.bot_data.get("pending_broadcasts", {})
-        message_text = pending.get(admin_id)
-        if not message_text:
-            await query.edit_message_text("❌ Message expiré. Relance `/broadcast <message>`.", parse_mode="Markdown")
-            return
-        users = await get_all_active_users()
-        await query.edit_message_text(f"📢 Envoi en cours à {len(users)} utilisateurs...")
-        sent, failed = 0, 0
-        for uid, _ in users:
-            try:
-                await context.bot.send_message(uid, message_text)
-                sent += 1
-                await asyncio.sleep(0.05)  # Éviter flood Telegram
-            except Exception:
-                failed += 1
-        # Nettoyer après envoi
-        context.application.bot_data.get("pending_broadcasts", {}).pop(admin_id, None)
-        await query.edit_message_text(
-            f"✅ *Broadcast terminé !*\n\n✉️ Envoyé : *{sent}*\n❌ Échecs : *{failed}*",
-            parse_mode="Markdown"
-        )
-        return
-
-    elif action == "bc_cancel":
-        try:
-            admin_id = int(value)
-            context.application.bot_data.get("pending_broadcasts", {}).pop(admin_id, None)
-        except Exception:
-            pass
-        await query.edit_message_text("❌ Broadcast annulé.")
+    if action in ("bc_confirm", "bc_cancel"):
+        # Obsolète — broadcast envoyé directement maintenant
+        await query.edit_message_text("ℹ️ Utilise /broadcast pour envoyer un message.")
         return
 
     elif action == "admin":
@@ -665,27 +629,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ── Admin broadcast conversationnel ─────────────────────────────────────
     if is_admin(user.id) and context.user_data.get("awaiting_broadcast"):
         context.user_data["awaiting_broadcast"] = False
-        users = await get_all_active_users()
-
-        if not users:
-            await update.message.reply_text("❌ Aucun utilisateur actif trouvé.")
-            return
-
-        # Stocker le message dans bot_data
-        if "pending_broadcasts" not in context.application.bot_data:
-            context.application.bot_data["pending_broadcasts"] = {}
-        context.application.bot_data["pending_broadcasts"][user.id] = text
-
-        confirm_keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton(f"✅ Envoyer à {len(users)} utilisateurs", callback_data=f"bc_confirm:{user.id}:"),
-            InlineKeyboardButton("❌ Annuler", callback_data=f"bc_cancel:{user.id}:"),
-        ]])
-
-        await update.message.reply_text(
-            f"📢 Aperçu du broadcast :\n\n{text}\n\n"
-            f"👥 Sera envoyé à {len(users)} utilisateur(s).",
-            reply_markup=confirm_keyboard
-        )
+        await _do_broadcast(update, text)
         return
 
     # ── Boutons du clavier persistant ───────────────────────────────────────
@@ -817,37 +761,48 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await msg.edit_text(text, parse_mode="Markdown")
 
 
+async def _do_broadcast(update: Update, message_text: str):
+    """Envoie le broadcast directement à tous les utilisateurs actifs."""
+    users = await get_all_active_users()
+    if not users:
+        await update.message.reply_text("❌ Aucun utilisateur actif trouvé.")
+        return
+
+    status_msg = await update.message.reply_text(
+        f"📢 Envoi en cours à {len(users)} utilisateur(s)..."
+    )
+    sent, failed = 0, 0
+    for uid, _ in users:
+        try:
+            await update.get_bot().send_message(chat_id=uid, text=message_text)
+            sent += 1
+            await asyncio.sleep(0.05)
+        except Exception as e:
+            logger.warning(f"Broadcast failed for {uid}: {e}")
+            failed += 1
+
+    await status_msg.edit_text(
+        f"✅ Message envoyé !\n\n"
+        f"✉️ Reçu par : {sent} utilisateur(s)\n"
+        f"❌ Échecs : {failed}"
+    )
+
+
 async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("⛔ Accès réservé à l'administrateur.")
         return
 
-    # Si un message est déjà fourni avec la commande, l'utiliser directement
     if context.args:
-        message_text = " ".join(context.args)
-        users = await get_all_active_users()
-        if not users:
-            await update.message.reply_text("❌ Aucun utilisateur actif.")
-            return
-        admin_id = update.effective_user.id
-        if "pending_broadcasts" not in context.application.bot_data:
-            context.application.bot_data["pending_broadcasts"] = {}
-        context.application.bot_data["pending_broadcasts"][admin_id] = message_text
-        confirm_keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton(f"✅ Envoyer à {len(users)} utilisateurs", callback_data=f"bc_confirm:{admin_id}:"),
-            InlineKeyboardButton("❌ Annuler", callback_data=f"bc_cancel:{admin_id}:"),
-        ]])
-        await update.message.reply_text(
-            f"📢 Aperçu :\n\n{message_text}\n\n👥 Sera envoyé à {len(users)} utilisateur(s).",
-            reply_markup=confirm_keyboard
-        )
+        # Message fourni directement : /broadcast Votre texte
+        await _do_broadcast(update, " ".join(context.args))
         return
 
     # Mode conversationnel : demander le message
     context.user_data["awaiting_broadcast"] = True
     await update.message.reply_text(
-        "📢 Tape ton message de broadcast :\n\n"
-        "(Écris n'importe quoi, je te demanderai confirmation avant d'envoyer)"
+        "📢 Tape ton message ci-dessous :\n"
+        "(Le bot l'enverra à tous les utilisateurs dès que tu l'envoies)"
     )
 
 
