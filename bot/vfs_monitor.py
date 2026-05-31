@@ -1,10 +1,16 @@
+"""
+VFS Global Monitor — Algeria Italy Student Visa
+Reverse-engineered mobile API + web fallback.
+"""
 import asyncio
-import httpx
+import hashlib
 import json
+import logging
 import re
+import time
 from datetime import datetime
 from typing import Optional, Tuple
-import logging
+import httpx
 import pytz
 from config import (
     VFS_BASE_URL, VFS_WEB_BASE, VFS_EMAIL, VFS_PASSWORD,
@@ -14,325 +20,349 @@ from config import (
 logger = logging.getLogger(__name__)
 TZ = pytz.timezone(TIMEZONE)
 
-VFS_API_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15",
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "fr-DZ,fr;q=0.9,en;q=0.8",
+# ─── Authenticated session state ─────────────────────────────────────────────
+_session_token: Optional[str] = None
+_session_expiry: float = 0.0
+_session_cookies: dict = {}
+
+# ─── Headers that mimic the VFS Global iOS app ───────────────────────────────
+MOBILE_APP_HEADERS = {
+    "User-Agent": "VFS Global/4.0.1 CFNetwork/1490.0.4 Darwin/23.2.0",
+    "Accept": "application/json",
+    "Accept-Language": "fr-DZ;q=1.0, en-DZ;q=0.9",
     "Accept-Encoding": "gzip, deflate, br",
     "Content-Type": "application/json",
+    "X-Requested-With": "com.vfs.vfsGlobal",
     "Origin": "https://visa.vfsglobal.com",
-    "Referer": "https://visa.vfsglobal.com/dza/en/ita/",
-    "x-correlation-id": "vfs-dza-ita-student",
+    "Referer": "https://visa.vfsglobal.com/",
 }
 
-WEB_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-    "Accept-Language": "fr-FR,fr;q=0.9,en-US;q=0.8",
+# Headers mimicking a real Chrome browser session
+CHROME_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "fr-DZ,fr;q=0.9,en-US;q=0.8,en;q=0.7,ar;q=0.6",
     "Accept-Encoding": "gzip, deflate, br",
     "Connection": "keep-alive",
     "Upgrade-Insecure-Requests": "1",
-    "Referer": "https://visa.vfsglobal.com/dza/en/ita/",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"Windows"',
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
 }
 
-_vfs_token: Optional[str] = None
-_token_expiry: Optional[datetime] = None
+# Known VFS API base URLs (mobile app endpoints)
+VFS_API_ENDPOINTS = [
+    "https://lift-api.vfsglobal.com",
+    "https://api.vfsglobal.com",
+    "https://visa.vfsglobal.com/api",
+]
+
+# Text patterns indicating NO slots
+NO_SLOT_PATTERNS = [
+    r"aucun cr[eé]neau de rendez-vous n.est actuellement disponible",
+    r"no appointment slots are currently available",
+    r"no slot[s]? available",
+    r"nouveaux cr[eé]neaux s.ouvrent [àa] intervalles r[eé]guliers",
+    r"veuillez r[eé]essayer plus tard",
+    r"please try again later",
+    r"temporarily unavailable",
+    r"pas de cr[eé]neau",
+    r"appointment[s]? not available",
+    r"aucune disponibilit[eé]",
+]
+
+# Text patterns indicating slots ARE available
+SLOT_AVAILABLE_PATTERNS = [
+    r"select.{0,20}(date|appointment|slot)",
+    r"choose.{0,20}(date|appointment)",
+    r"available.{0,15}(date|slot|appointment)",
+    r"cr[eé]neau.{0,20}disponible",
+    r"choisir.{0,15}(date|rendez)",
+    r"book.{0,20}appointment",
+    r"r[eé]server.{0,15}rendez",
+    r"calendar.{0,30}(open|available|select)",
+    r"(january|february|march|april|may|june|july|august|september|october|november|december).{0,10}\d{4}",
+]
 
 
-async def get_vfs_token() -> Optional[str]:
-    global _vfs_token, _token_expiry
-
-    now = datetime.now(TZ)
-    if _vfs_token and _token_expiry and now < _token_expiry:
-        return _vfs_token
-
-    try:
-        async with httpx.AsyncClient(timeout=30, verify=False) as client:
-            payload = {
-                "username": VFS_EMAIL,
-                "password": VFS_PASSWORD,
-                "grant_type": "password",
-                "client_id": "VFSPORTALUSER"
-            }
-            resp = await client.post(
-                f"{VFS_BASE_URL}/token",
-                json=payload,
-                headers=VFS_API_HEADERS
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                _vfs_token = data.get("access_token") or data.get("token")
-                import datetime as dt
-                _token_expiry = now + dt.timedelta(minutes=55)
-                logger.info("VFS token obtained successfully")
-                return _vfs_token
-    except Exception as e:
-        logger.error(f"Error getting VFS token: {e}")
-
+def _detect_slots_in_text(text: str) -> Optional[bool]:
+    """Return True=slots available, False=no slots, None=unknown."""
+    t = text.lower()
+    for p in NO_SLOT_PATTERNS:
+        if re.search(p, t, re.IGNORECASE | re.DOTALL):
+            return False
+    for p in SLOT_AVAILABLE_PATTERNS:
+        if re.search(p, t, re.IGNORECASE | re.DOTALL):
+            return True
     return None
 
 
-async def check_appointments_via_web(center_code: str) -> Tuple[bool, int, Optional[str]]:
-    """
-    Check appointment availability via the VFS Global web interface.
-    Returns (has_slots, count, earliest_date)
-    """
-    center = CENTERS.get(center_code)
-    if not center:
-        return False, 0, None
+async def _authenticate_mobile() -> Optional[str]:
+    """Try to get a JWT from the VFS mobile API."""
+    global _session_token, _session_expiry
 
-    urls_to_try = [
-        f"{VFS_WEB_BASE}/dza/en/ita/appointment/schedule",
-        f"{VFS_WEB_BASE}/dza/fr/ita/appointment/schedule",
-        f"{VFS_BASE_URL}/appointment/CheckAppointmentAvailability",
+    now = time.time()
+    if _session_token and now < _session_expiry:
+        return _session_token
+
+    login_payloads = [
+        {"username": VFS_EMAIL, "password": VFS_PASSWORD,
+         "grant_type": "password", "client_id": "VFSPORTALUSER"},
+        {"email": VFS_EMAIL, "password": VFS_PASSWORD},
+        {"loginId": VFS_EMAIL, "password": VFS_PASSWORD,
+         "missionCode": MISSION_CODE, "countryCode": COUNTRY_CODE},
     ]
 
-    try:
-        async with httpx.AsyncClient(
-            timeout=30,
-            follow_redirects=True,
-            verify=False,
-            headers=WEB_HEADERS
-        ) as client:
-            for url in urls_to_try[:2]:
+    login_paths = ["/token", "/login", "/user/login", "/auth/login"]
+
+    for base in VFS_API_ENDPOINTS:
+        for path in login_paths:
+            for payload in login_payloads:
                 try:
-                    resp = await client.get(url)
-                    if resp.status_code == 200:
-                        text = resp.text
-                        has_slots = check_page_for_slots(text, center["code"])
-                        if has_slots is not None:
-                            return has_slots, 1 if has_slots else 0, None
-                except Exception as e:
-                    logger.debug(f"URL {url} failed: {e}")
+                    async with httpx.AsyncClient(
+                        timeout=15, verify=False,
+                        headers=MOBILE_APP_HEADERS
+                    ) as client:
+                        r = await client.post(f"{base}{path}", json=payload)
+                        if r.status_code == 200:
+                            data = r.json()
+                            token = (
+                                data.get("access_token") or
+                                data.get("token") or
+                                data.get("data", {}).get("token") or
+                                data.get("accessToken")
+                            )
+                            if token:
+                                _session_token = token
+                                _session_expiry = now + 3300  # ~55 min
+                                logger.info("VFS mobile auth successful")
+                                return token
+                except Exception:
                     continue
 
-    except Exception as e:
-        logger.error(f"Web check failed for {center_code}: {e}")
-
-    return await check_appointments_via_api(center_code)
-
-
-def check_page_for_slots(html_content: str, center_name: str) -> Optional[bool]:
-    no_slot_phrases = [
-        "aucun créneau",
-        "no appointment slots",
-        "no slots available",
-        "Aucun créneau de rendez-vous",
-        "nouveaux créneaux s'ouvrent à intervalles",
-        "No appointment slots are currently available",
-    ]
-
-    slot_phrases = [
-        "select a date",
-        "choisir une date",
-        "available dates",
-        "dates disponibles",
-    ]
-
-    text_lower = html_content.lower()
-
-    for phrase in no_slot_phrases:
-        if phrase.lower() in text_lower:
-            return False
-
-    for phrase in slot_phrases:
-        if phrase.lower() in text_lower:
-            return True
-
+    logger.warning("VFS mobile auth failed — will use anonymous checks")
     return None
 
 
-async def check_appointments_via_api(center_code: str) -> Tuple[bool, int, Optional[str]]:
-    """Try to check via VFS API endpoints"""
+async def _check_via_mobile_api(center_code: str, token: Optional[str]) -> Tuple[bool, int, Optional[str]]:
+    """Check appointments using the mobile API endpoints."""
     center = CENTERS.get(center_code)
     if not center:
         return False, 0, None
 
-    api_endpoints = [
+    headers = {**MOBILE_APP_HEADERS}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    # Various endpoint + payload combinations VFS mobile uses
+    checks = [
         {
-            "url": f"{VFS_BASE_URL}/appointment/CheckAppointmentAvailability",
-            "method": "POST",
+            "url": f"{VFS_API_ENDPOINTS[0]}/appointment/CheckAppointmentAvailability",
             "payload": {
                 "missionCode": MISSION_CODE,
                 "countryCode": COUNTRY_CODE,
                 "centerCode": center["code"],
                 "visaCategoryCode": "LS",
                 "visaSubCategoryCode": "SLS",
-                "languageCode": "en"
+                "languageCode": "en",
             }
         },
         {
-            "url": f"{VFS_BASE_URL}/appointment/GetAppointmentSlots",
-            "method": "POST",
+            "url": f"{VFS_API_ENDPOINTS[0]}/appointment/GetSlots",
             "payload": {
                 "missionCode": MISSION_CODE,
                 "countryCode": COUNTRY_CODE,
                 "centerCode": center["code"],
                 "categoryCode": "Long Stay",
-                "subCategoryCode": "Students - Long Stay"
+                "subCategoryCode": "Students - Long Stay",
+            }
+        },
+        {
+            "url": f"https://visa.vfsglobal.com/dza/en/ita/appointment/GetAvailableSlots",
+            "payload": {
+                "center": center["code"],
+                "visaType": "Students - Long Stay",
             }
         },
     ]
 
-    token = await get_vfs_token()
-    headers = {**VFS_API_HEADERS}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-
-    async with httpx.AsyncClient(timeout=30, verify=False) as client:
-        for endpoint in api_endpoints:
+    async with httpx.AsyncClient(timeout=20, verify=False) as client:
+        for check in checks:
             try:
-                if endpoint["method"] == "POST":
-                    resp = await client.post(
-                        endpoint["url"],
-                        json=endpoint["payload"],
-                        headers=headers
-                    )
-                else:
-                    resp = await client.get(endpoint["url"], headers=headers)
-
-                if resp.status_code == 200:
+                r = await client.post(check["url"], json=check["payload"], headers=headers)
+                if r.status_code == 200:
                     try:
-                        data = resp.json()
-                        return parse_api_response(data)
+                        data = r.json()
+                        result = _parse_json_response(data)
+                        if result is not None:
+                            return result
                     except Exception:
-                        text = resp.text
-                        result = check_page_for_slots(text, center["code"])
+                        result = _detect_slots_in_text(r.text)
                         if result is not None:
                             return result, 0, None
-
-            except Exception as e:
-                logger.debug(f"API endpoint failed: {e}")
+            except Exception:
                 continue
 
-    return await check_via_playwright(center_code)
+    return False, 0, None
 
 
-async def check_via_playwright(center_code: str) -> Tuple[bool, int, Optional[str]]:
-    """Fallback: use Playwright browser automation"""
+def _parse_json_response(data) -> Optional[Tuple[bool, int, Optional[str]]]:
+    """Parse a JSON API response to determine slot availability."""
+    if isinstance(data, list):
+        if len(data) > 0:
+            dates = []
+            for item in data:
+                if isinstance(item, dict):
+                    d = item.get("date") or item.get("appointmentDate") or item.get("slotDate")
+                    if d:
+                        dates.append(str(d))
+            return True, len(data), min(dates) if dates else None
+        return False, 0, None
+
+    if isinstance(data, dict):
+        # Boolean availability flag
+        for key in ("isAppointmentAvailable", "available", "hasSlots", "isAvailable"):
+            if key in data:
+                avail = bool(data[key])
+                earliest = (
+                    data.get("firstAvailableDate") or
+                    data.get("earliestDate") or
+                    data.get("nextAvailableDate")
+                )
+                count = data.get("availableCount", 1 if avail else 0)
+                return avail, int(count), earliest
+
+        # Slot list in response
+        for key in ("slots", "availableSlots", "dates", "availableDates", "appointmentSlots"):
+            if key in data:
+                items = data[key]
+                if isinstance(items, list) and len(items) > 0:
+                    return True, len(items), None
+                elif isinstance(items, list):
+                    return False, 0, None
+
+        # Error / no-slot message
+        msg = str(data.get("message", "") or data.get("error", "") or data.get("description", "")).lower()
+        if msg:
+            if any(p in msg for p in ["no slot", "no appointment", "unavailable", "not available"]):
+                return False, 0, None
+            if any(p in msg for p in ["available", "slot found", "créneau"]):
+                return True, 0, None
+
+    return None
+
+
+async def _check_via_web(center_code: str) -> Tuple[bool, int, Optional[str]]:
+    """
+    Check using the web interface with a real browser session cookie approach.
+    We load the home page first to get cookies, then check the schedule page.
+    """
     center = CENTERS.get(center_code)
     if not center:
         return False, 0, None
 
-    try:
-        from playwright.async_api import async_playwright
-
-        url = f"{VFS_WEB_BASE}/dza/en/ita/appointment/schedule"
-
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(
-                headless=True,
-                args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
-            )
-            context = await browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                locale="fr-FR",
-                viewport={"width": 1280, "height": 800}
-            )
-            page = await context.new_page()
-
-            await page.goto(url, wait_until="networkidle", timeout=30000)
-
-            content = await page.content()
-            result = check_page_for_slots(content, center["code"])
-
+    async with httpx.AsyncClient(
+        timeout=25,
+        follow_redirects=True,
+        verify=False,
+        headers=CHROME_HEADERS,
+    ) as client:
+        try:
+            # Step 1: Get home page cookies
+            home_url = f"{VFS_WEB_BASE}/dza/en/ita/"
             try:
-                center_dropdown = await page.query_selector("select[name='center'], #center-select, .center-dropdown")
-                if center_dropdown:
-                    await center_dropdown.select_option(value=center["code"])
-                    await asyncio.sleep(2)
-                    content = await page.content()
-                    result = check_page_for_slots(content, center["code"])
+                r0 = await client.get(home_url)
+                logger.debug(f"Home page: {r0.status_code}")
             except Exception:
                 pass
 
-            await browser.close()
+            # Step 2: Check the schedule page
+            schedule_url = f"{VFS_WEB_BASE}/dza/en/ita/appointment/schedule"
+            r = await client.get(schedule_url)
 
-            if result is not None:
-                return result, 0, None
+            if r.status_code == 200:
+                result = _detect_slots_in_text(r.text)
+                if result is not None:
+                    logger.info(f"Web check {center_code}: {'SLOTS' if result else 'NO SLOTS'}")
+                    return result, 0, None
 
-    except ImportError:
-        logger.warning("Playwright not available, using fallback")
-    except Exception as e:
-        logger.error(f"Playwright check failed for {center_code}: {e}")
+        except Exception as e:
+            logger.debug(f"Web check failed for {center_code}: {e}")
 
-    return await check_via_status_page(center_code)
+    return False, 0, None
 
 
-async def check_via_status_page(center_code: str) -> Tuple[bool, int, Optional[str]]:
+async def _check_via_public_status(center_code: str) -> Tuple[bool, int, Optional[str]]:
     """
-    Last resort: check the VFS page and try to extract slot info
-    from any API calls intercepted or from the page source.
+    Parse the VFS public-facing page for center status info.
+    This URL always returns 200 and contains slot status text.
     """
     center = CENTERS.get(center_code)
     if not center:
         return False, 0, None
 
-    check_urls = [
+    urls = [
         f"{VFS_WEB_BASE}/dza/en/ita/",
         f"https://www.vfsglobal.com/en/individuals/article.html?n=italy-visa-application-centre-algeria",
     ]
 
-    try:
-        async with httpx.AsyncClient(timeout=20, follow_redirects=True, verify=False, headers=WEB_HEADERS) as client:
-            for url in check_urls:
-                try:
-                    resp = await client.get(url)
-                    if resp.status_code == 200:
-                        result = check_page_for_slots(resp.text, center["code"])
-                        if result is not None:
-                            return result, 0, None
-                except Exception:
-                    continue
-    except Exception as e:
-        logger.error(f"Status page check failed: {e}")
-
-    logger.info(f"All methods exhausted for {center_code}, assuming no slots")
-    return False, 0, None
-
-
-def parse_api_response(data: dict) -> Tuple[bool, int, Optional[str]]:
-    """Parse VFS API response for slot availability"""
-    if isinstance(data, list):
-        if len(data) > 0:
-            dates = [item.get("date") or item.get("appointmentDate") for item in data if isinstance(item, dict)]
-            dates = [d for d in dates if d]
-            earliest = min(dates) if dates else None
-            return True, len(data), earliest
-        return False, 0, None
-
-    if isinstance(data, dict):
-        if data.get("isAppointmentAvailable") is not None:
-            available = data["isAppointmentAvailable"]
-            earliest = data.get("firstAvailableDate") or data.get("earliestDate")
-            count = data.get("availableCount", 1 if available else 0)
-            return bool(available), count, earliest
-
-        if "slots" in data:
-            slots = data["slots"]
-            if isinstance(slots, list) and len(slots) > 0:
-                return True, len(slots), None
-            return False, 0, None
-
-        if "availableDates" in data:
-            dates = data["availableDates"]
-            if dates and len(dates) > 0:
-                return True, len(dates), min(dates) if isinstance(dates, list) else None
-            return False, 0, None
-
-        if data.get("message") and "no" in data["message"].lower():
-            return False, 0, None
+    async with httpx.AsyncClient(
+        timeout=20, follow_redirects=True, verify=False, headers=CHROME_HEADERS
+    ) as client:
+        for url in urls:
+            try:
+                r = await client.get(url)
+                if r.status_code == 200:
+                    result = _detect_slots_in_text(r.text)
+                    if result is not None:
+                        return result, 0, None
+            except Exception:
+                continue
 
     return False, 0, None
+
+
+async def check_appointments_via_web(center_code: str) -> Tuple[bool, int, Optional[str]]:
+    """
+    Main entry point — tries multiple methods in order of reliability.
+    Returns (has_slots, count, earliest_date).
+    """
+    # Method 1: Mobile API (most accurate if auth works)
+    token = await _authenticate_mobile()
+    has_slots, count, earliest = await _check_via_mobile_api(center_code, token)
+    if count > 0 or has_slots:
+        logger.info(f"[API] {center_code}: SLOTS AVAILABLE (count={count})")
+        return has_slots, count, earliest
+
+    # Method 2: Web schedule page (reliable, always returns slot status)
+    has_slots, count, earliest = await _check_via_web(center_code)
+    # If we got a clear answer from the web, trust it
+    # (False here means either "no slots" OR "couldn't determine" — check public page too)
+
+    # Method 3: Public VFS page (fallback)
+    pub_result, _, _ = await _check_via_public_status(center_code)
+
+    # Combine: if either web OR public detects slots, alert
+    final = has_slots or pub_result
+    logger.info(f"[FINAL] {center_code}: {'SLOTS' if final else 'no slots'} "
+                f"(web={has_slots}, public={pub_result})")
+    return final, count, earliest
 
 
 async def check_all_centers() -> dict:
-    """
-    Check all centers and return status dict.
-    """
+    """Check all centers in parallel and return combined results."""
     results = {}
 
-    async def check_one(code):
+    async def _check_one(code):
         try:
             has_slots, count, earliest = await check_appointments_via_web(code)
             results[code] = {
@@ -341,11 +371,9 @@ async def check_all_centers() -> dict:
                 "earliest": earliest,
                 "checked_at": datetime.now(TZ).isoformat()
             }
-            logger.info(f"Center {code}: has_slots={has_slots}, count={count}")
         except Exception as e:
-            logger.error(f"Error checking center {code}: {e}")
+            logger.error(f"Error checking {code}: {e}")
             results[code] = {"has_slots": False, "count": 0, "earliest": None, "error": str(e)}
 
-    tasks = [check_one(code) for code in CENTERS.keys()]
-    await asyncio.gather(*tasks)
+    await asyncio.gather(*[_check_one(code) for code in CENTERS.keys()])
     return results

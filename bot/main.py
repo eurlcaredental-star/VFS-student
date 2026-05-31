@@ -13,7 +13,8 @@ from typing import Optional
 
 import pytz
 from telegram import (
-    Update, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup,
+    Update, BotCommand, BotCommandScopeChat, BotCommandScopeDefault,
+    InlineKeyboardButton, InlineKeyboardMarkup,
     MenuButtonCommands, ReplyKeyboardMarkup, KeyboardButton
 )
 from telegram.ext import (
@@ -27,7 +28,8 @@ from config import TELEGRAM_BOT_TOKEN, CENTERS, TIMEZONE, ADMIN_USER_IDS
 from database import (
     init_db, add_or_update_user, subscribe_to_center, unsubscribe_from_center,
     get_user_subscriptions, get_center_status, get_historical_events, get_stats,
-    toggle_briefing
+    toggle_briefing, get_all_users_detailed, get_user_detail,
+    get_subs_per_center, ban_user
 )
 from vfs_monitor import check_appointments_via_web
 from predictions import build_predictions, format_predictions_message, get_next_likely_opening
@@ -507,6 +509,36 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 await query.edit_message_text("Aucune ouverture enregistrée pour le moment.")
             return
+        elif value == "users":
+            await query.edit_message_text("👥 Chargement...")
+            users = await get_all_users_detailed()
+            lines = [f"👥 *UTILISATEURS* ({len(users)} total)\n"]
+            for u in users[:20]:
+                uname = f"@{u['username']}" if u['username'] else "—"
+                briefing_icon = "🔔" if u["receive_briefing"] else "🔕"
+                sub_icon = f"📡{u['sub_count']}" if u["sub_count"] else "📭"
+                lines.append(f"`{u['user_id']}` {briefing_icon}{sub_icon} *{u['first_name'] or '?'}* {uname}")
+            if len(users) > 20:
+                lines.append(f"_+{len(users)-20} autres — /users pour la liste complète_")
+            await query.edit_message_text("\n".join(lines), parse_mode="Markdown")
+            return
+        elif value == "centers":
+            await query.edit_message_text("📡 Chargement...")
+            subs_per_center = await get_subs_per_center()
+            events = await get_historical_events(limit=200)
+            events_per_center = {}
+            for e in events:
+                c = e["center_code"]
+                events_per_center[c] = events_per_center.get(c, 0) + 1
+            lines = ["📡 *STATS PAR CENTRE*\n"]
+            for code, info in CENTERS.items():
+                subs = subs_per_center.get(code, 0)
+                evts = events_per_center.get(code, 0)
+                status = await get_center_status(code)
+                ind = "🟢" if (status and status["has_slots"]) else "🔴"
+                lines.append(f"{ind} {info['flag']} *{info['name']}* — {subs} abonnés • {evts} ouvertures")
+            await query.edit_message_text("\n".join(lines), parse_mode="Markdown")
+            return
 
     if action == "sub":
         if value == "ALL":
@@ -767,6 +799,132 @@ async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def cmd_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return
+    msg = await update.message.reply_text("👥 Chargement des utilisateurs...")
+    users = await get_all_users_detailed()
+    if not users:
+        await msg.edit_text("Aucun utilisateur enregistré.")
+        return
+
+    lines = [f"👥 *LISTE DES UTILISATEURS* ({len(users)} total)\n"]
+    for u in users[:30]:
+        uname = f"@{u['username']}" if u['username'] else "—"
+        try:
+            joined = datetime.fromisoformat(u["joined_at"]).strftime("%d/%m/%y")
+        except Exception:
+            joined = "?"
+        briefing_icon = "🔔" if u["receive_briefing"] else "🔕"
+        sub_icon = f"📡{u['sub_count']}" if u["sub_count"] else "📭"
+        lines.append(
+            f"`{u['user_id']}` {briefing_icon}{sub_icon} "
+            f"*{u['first_name'] or '?'}* {uname} — inscrit {joined}"
+        )
+    if len(users) > 30:
+        lines.append(f"\n_...et {len(users)-30} autres. Utilise /userdata ID pour voir le détail._")
+    lines.append(f"\n💡 `/userdata <ID>` pour les détails d'un utilisateur")
+    await msg.edit_text("\n".join(lines), parse_mode="Markdown")
+
+
+async def cmd_userdata(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return
+    if not context.args:
+        await update.message.reply_text("Usage : `/userdata <telegram_id>`", parse_mode="Markdown")
+        return
+    try:
+        uid = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("❌ ID invalide — doit être un nombre.")
+        return
+
+    user = await get_user_detail(uid)
+    if not user:
+        await update.message.reply_text(f"❌ Utilisateur `{uid}` non trouvé.", parse_mode="Markdown")
+        return
+
+    try:
+        joined = datetime.fromisoformat(user["joined_at"]).strftime("%d/%m/%Y %H:%M")
+    except Exception:
+        joined = user["joined_at"]
+    try:
+        last = datetime.fromisoformat(user["last_active"]).strftime("%d/%m/%Y %H:%M")
+    except Exception:
+        last = user["last_active"]
+
+    subs = user["subscriptions"]
+    sub_lines = ""
+    if subs:
+        for s in subs:
+            c = CENTERS.get(s["center"], {})
+            sub_lines += f"\n   • {c.get('flag','📍')} {c.get('name', s['center'])}"
+    else:
+        sub_lines = "\n   Aucun abonnement"
+
+    text = f"""
+👤 *DONNÉES UTILISATEUR*
+
+🆔 ID Telegram : `{user['user_id']}`
+👤 Nom : *{user['first_name'] or '?'}*
+🔗 Username : {'@' + user['username'] if user['username'] else '—'}
+🌐 Langue : {user['language_code'] or '?'}
+📅 Inscrit : {joined}
+🕐 Dernier actif : {last}
+🔔 Briefing : {'Activé' if user['receive_briefing'] else 'Désactivé'}
+✅ Compte actif : {'Oui' if user['is_active'] else 'Non'}
+
+📡 *Abonnements :*{sub_lines}
+""".strip()
+
+    ban_btn = InlineKeyboardMarkup([[
+        InlineKeyboardButton(f"🚫 Bannir cet utilisateur", callback_data=f"admin_ban:{uid}")
+    ]])
+    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=ban_btn)
+
+
+async def cmd_centers_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return
+    subs_per_center = await get_subs_per_center()
+    events = await get_historical_events(limit=200)
+
+    events_per_center = {}
+    for e in events:
+        c = e["center_code"]
+        events_per_center[c] = events_per_center.get(c, 0) + 1
+
+    lines = ["📡 *STATS PAR CENTRE*\n"]
+    for code, info in CENTERS.items():
+        subs = subs_per_center.get(code, 0)
+        evts = events_per_center.get(code, 0)
+        status = await get_center_status(code)
+        indicator = "🟢" if (status and status["has_slots"]) else "🔴"
+        last_open = status["last_available"] if status and status["last_available"] else "jamais"
+        try:
+            last_open = datetime.fromisoformat(last_open).strftime("%d/%m/%Y %H:%M")
+        except Exception:
+            pass
+        lines.append(
+            f"{indicator} {info['flag']} *{info['name']}*\n"
+            f"   👥 {subs} abonnés • 📊 {evts} ouvertures détectées\n"
+            f"   🕐 Dernière ouverture : {last_open}"
+        )
+    await update.message.reply_text("\n\n".join(lines), parse_mode="Markdown")
+
+
+async def cmd_forcecheck(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return
+    msg = await update.message.reply_text("🔍 Vérification forcée de tous les centres...")
+    from scheduler import check_and_alert as do_check
+    await do_check()
+    await msg.edit_text(
+        "✅ *Vérification terminée !*\n\nLes abonnés ont été notifiés si des créneaux sont disponibles.",
+        parse_mode="Markdown"
+    )
+
+
 async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("⛔ Accès réservé à l'administrateur.")
@@ -778,15 +936,19 @@ async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("🔍 Check VFS maintenant", callback_data="admin:check"),
         ],
         [
+            InlineKeyboardButton("👥 Utilisateurs", callback_data="admin:users"),
+            InlineKeyboardButton("📡 Stats centres", callback_data="admin:centers"),
+        ],
+        [
             InlineKeyboardButton("📢 Broadcast", callback_data="admin:broadcast_help"),
-            InlineKeyboardButton("📋 Logs récents", callback_data="admin:logs"),
+            InlineKeyboardButton("📋 Dernières ouvertures", callback_data="admin:logs"),
         ],
     ])
 
     await update.message.reply_text(
         f"🔧 *PANNEAU ADMIN*\n\n"
         f"Bienvenue, *{update.effective_user.first_name}* !\n\n"
-        f"Que veux-tu faire ?",
+        f"🤖 Bot actif • Surveillance toutes les 2 min",
         parse_mode="Markdown",
         reply_markup=keyboard
     )
@@ -797,7 +959,7 @@ async def post_init(application: Application):
     await init_db()
     logger.info("Database initialized")
 
-    commands = [
+    user_commands = [
         BotCommand("start", "🚀 Démarrer le bot"),
         BotCommand("subscribe", "🔔 S'abonner aux alertes"),
         BotCommand("unsubscribe", "🔕 Se désabonner"),
@@ -807,15 +969,35 @@ async def post_init(application: Application):
         BotCommand("briefing", "☀️ Briefing quotidien"),
         BotCommand("guide", "📚 Guide visa étudiant"),
         BotCommand("tip", "💡 Conseil du jour"),
-        BotCommand("verify", "🛠️ Vérifier le bot"),
         BotCommand("briefing_on", "🔔 Activer le briefing matin"),
         BotCommand("briefing_off", "🔕 Désactiver le briefing"),
         BotCommand("help", "❓ Aide & commandes"),
     ]
 
-    await application.bot.set_my_commands(commands)
+    admin_only_commands = [
+        BotCommand("admin", "🔧 Panneau admin"),
+        BotCommand("stats", "📊 Statistiques du bot"),
+        BotCommand("users", "👥 Liste des utilisateurs"),
+        BotCommand("userdata", "👤 Données d'un utilisateur"),
+        BotCommand("centers_stats", "📡 Stats par centre"),
+        BotCommand("forcecheck", "🔍 Vérification VFS forcée"),
+        BotCommand("broadcast", "📢 Message à tous"),
+    ]
+
+    await application.bot.set_my_commands(user_commands, scope=BotCommandScopeDefault())
+
+    for admin_id in ADMIN_USER_IDS:
+        try:
+            await application.bot.set_my_commands(
+                user_commands + admin_only_commands,
+                scope=BotCommandScopeChat(chat_id=admin_id)
+            )
+            logger.info(f"Admin commands set for user {admin_id}")
+        except Exception as e:
+            logger.warning(f"Could not set admin commands for {admin_id}: {e}")
+
     await application.bot.set_chat_menu_button(menu_button=MenuButtonCommands())
-    logger.info("Bot commands configured")
+    logger.info("Bot commands configured (user + admin scopes)")
 
     scheduler = setup_scheduler(application.bot)
     scheduler.start()
@@ -856,6 +1038,10 @@ def main():
     app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CommandHandler("broadcast", cmd_broadcast))
     app.add_handler(CommandHandler("admin", cmd_admin))
+    app.add_handler(CommandHandler("users", cmd_users))
+    app.add_handler(CommandHandler("userdata", cmd_userdata))
+    app.add_handler(CommandHandler("centers_stats", cmd_centers_stats))
+    app.add_handler(CommandHandler("forcecheck", cmd_forcecheck))
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 

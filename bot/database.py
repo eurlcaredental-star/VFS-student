@@ -245,3 +245,76 @@ async def toggle_briefing(user_id: int, enabled: bool):
             UPDATE users SET receive_briefing = ? WHERE user_id = ?
         """, (1 if enabled else 0, user_id))
         await db.commit()
+
+
+async def get_all_users_detailed() -> list:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("""
+            SELECT u.user_id, u.username, u.first_name, u.joined_at,
+                   u.last_active, u.receive_briefing,
+                   COUNT(s.id) as sub_count
+            FROM users u
+            LEFT JOIN subscriptions s ON u.user_id = s.user_id AND s.is_active = 1
+            WHERE u.is_active = 1
+            GROUP BY u.user_id
+            ORDER BY u.joined_at DESC
+        """) as cursor:
+            rows = await cursor.fetchall()
+            return [
+                {
+                    "user_id": row[0],
+                    "username": row[1],
+                    "first_name": row[2],
+                    "joined_at": row[3],
+                    "last_active": row[4],
+                    "receive_briefing": bool(row[5]),
+                    "sub_count": row[6],
+                }
+                for row in rows
+            ]
+
+
+async def get_user_detail(user_id: int) -> Optional[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("""
+            SELECT user_id, username, first_name, language_code,
+                   joined_at, last_active, is_active, receive_briefing
+            FROM users WHERE user_id = ?
+        """, (user_id,)) as cursor:
+            row = await cursor.fetchone()
+            if not row:
+                return None
+            user = {
+                "user_id": row[0], "username": row[1], "first_name": row[2],
+                "language_code": row[3], "joined_at": row[4],
+                "last_active": row[5], "is_active": bool(row[6]),
+                "receive_briefing": bool(row[7]),
+            }
+        async with db.execute("""
+            SELECT center_code, subscribed_at FROM subscriptions
+            WHERE user_id = ? AND is_active = 1
+        """, (user_id,)) as cursor:
+            subs = await cursor.fetchall()
+            user["subscriptions"] = [{"center": r[0], "since": r[1]} for r in subs]
+        return user
+
+
+async def get_subs_per_center() -> dict:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("""
+            SELECT center_code, COUNT(*) as cnt
+            FROM subscriptions WHERE is_active = 1
+            GROUP BY center_code ORDER BY cnt DESC
+        """) as cursor:
+            rows = await cursor.fetchall()
+            return {row[0]: row[1] for row in rows}
+
+
+async def ban_user(user_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE users SET is_active = 0 WHERE user_id = ?", (user_id,))
+        await db.execute("UPDATE subscriptions SET is_active = 0 WHERE user_id = ?", (user_id,))
+        await db.commit()
+
+
+from typing import Optional
