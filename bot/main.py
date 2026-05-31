@@ -658,9 +658,37 @@ async def cmd_guide_from_callback(query):
 
 
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle persistent keyboard button presses"""
+    """Handle persistent keyboard button presses and conversational states."""
     text = update.message.text
+    user = update.effective_user
 
+    # ── Admin broadcast conversationnel ─────────────────────────────────────
+    if is_admin(user.id) and context.user_data.get("awaiting_broadcast"):
+        context.user_data["awaiting_broadcast"] = False
+        users = await get_all_active_users()
+
+        if not users:
+            await update.message.reply_text("❌ Aucun utilisateur actif trouvé.")
+            return
+
+        # Stocker le message dans bot_data
+        if "pending_broadcasts" not in context.application.bot_data:
+            context.application.bot_data["pending_broadcasts"] = {}
+        context.application.bot_data["pending_broadcasts"][user.id] = text
+
+        confirm_keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton(f"✅ Envoyer à {len(users)} utilisateurs", callback_data=f"bc_confirm:{user.id}:"),
+            InlineKeyboardButton("❌ Annuler", callback_data=f"bc_cancel:{user.id}:"),
+        ]])
+
+        await update.message.reply_text(
+            f"📢 Aperçu du broadcast :\n\n{text}\n\n"
+            f"👥 Sera envoyé à {len(users)} utilisateur(s).",
+            reply_markup=confirm_keyboard
+        )
+        return
+
+    # ── Boutons du clavier persistant ───────────────────────────────────────
     if text == "🔔 Mes alertes":
         await cmd_mycenters(update, context)
     elif text == "📊 Statut VFS":
@@ -794,39 +822,32 @@ async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⛔ Accès réservé à l'administrateur.")
         return
 
-    if not context.args:
+    # Si un message est déjà fourni avec la commande, l'utiliser directement
+    if context.args:
+        message_text = " ".join(context.args)
+        users = await get_all_active_users()
+        if not users:
+            await update.message.reply_text("❌ Aucun utilisateur actif.")
+            return
+        admin_id = update.effective_user.id
+        if "pending_broadcasts" not in context.application.bot_data:
+            context.application.bot_data["pending_broadcasts"] = {}
+        context.application.bot_data["pending_broadcasts"][admin_id] = message_text
+        confirm_keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton(f"✅ Envoyer à {len(users)} utilisateurs", callback_data=f"bc_confirm:{admin_id}:"),
+            InlineKeyboardButton("❌ Annuler", callback_data=f"bc_cancel:{admin_id}:"),
+        ]])
         await update.message.reply_text(
-            "📢 *Broadcast*\n\nUsage : `/broadcast Votre message ici`\n\n"
-            "Le message sera envoyé à tous les utilisateurs actifs.",
-            parse_mode="Markdown"
+            f"📢 Aperçu :\n\n{message_text}\n\n👥 Sera envoyé à {len(users)} utilisateur(s).",
+            reply_markup=confirm_keyboard
         )
         return
 
-    message_text = " ".join(context.args)
-    users = await get_all_active_users()
-
-    if not users:
-        await update.message.reply_text("❌ Aucun utilisateur actif trouvé.")
-        return
-
-    # Stocker le message dans bot_data (pas callback_data — limite 64 octets Telegram)
-    admin_id = update.effective_user.id
-    if "pending_broadcasts" not in context.application.bot_data:
-        context.application.bot_data["pending_broadcasts"] = {}
-    context.application.bot_data["pending_broadcasts"][admin_id] = message_text
-
-    confirm_keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton(f"✅ Envoyer à {len(users)} utilisateurs", callback_data=f"bc_confirm:{admin_id}:"),
-            InlineKeyboardButton("❌ Annuler", callback_data=f"bc_cancel:{admin_id}:"),
-        ]
-    ])
-
+    # Mode conversationnel : demander le message
+    context.user_data["awaiting_broadcast"] = True
     await update.message.reply_text(
-        f"📢 *Aperçu du broadcast :*\n\n{message_text}\n\n"
-        f"👥 Sera envoyé à *{len(users)}* utilisateur(s).",
-        parse_mode="Markdown",
-        reply_markup=confirm_keyboard
+        "📢 Tape ton message de broadcast :\n\n"
+        "(Écris n'importe quoi, je te demanderai confirmation avant d'envoyer)"
     )
 
 
