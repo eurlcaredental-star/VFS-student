@@ -799,6 +799,16 @@ async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def cmd_myid(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    await update.message.reply_text(
+        f"🆔 *Ton ID Telegram*\n\n"
+        f"`{user.id}`\n\n"
+        f"Copie ce numéro et ajoute-le dans la variable `ADMIN_USER_IDS` sur Railway.",
+        parse_mode="Markdown"
+    )
+
+
 async def cmd_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return
@@ -1042,6 +1052,7 @@ def main():
     app.add_handler(CommandHandler("userdata", cmd_userdata))
     app.add_handler(CommandHandler("centers_stats", cmd_centers_stats))
     app.add_handler(CommandHandler("forcecheck", cmd_forcecheck))
+    app.add_handler(CommandHandler("myid", cmd_myid))
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
