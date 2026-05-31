@@ -452,15 +452,28 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not is_admin(user.id):
             await query.answer("⛔ Non autorisé", show_alert=True)
             return
+        # Récupérer le message stocké dans bot_data
+        try:
+            admin_id = int(value)
+        except Exception:
+            admin_id = user.id
+        pending = context.application.bot_data.get("pending_broadcasts", {})
+        message_text = pending.get(admin_id)
+        if not message_text:
+            await query.edit_message_text("❌ Message expiré. Relance `/broadcast <message>`.", parse_mode="Markdown")
+            return
         users = await get_all_active_users()
         await query.edit_message_text(f"📢 Envoi en cours à {len(users)} utilisateurs...")
         sent, failed = 0, 0
         for uid, _ in users:
             try:
-                await context.bot.send_message(uid, extra, parse_mode="Markdown")
+                await context.bot.send_message(uid, message_text)
                 sent += 1
+                await asyncio.sleep(0.05)  # Éviter flood Telegram
             except Exception:
                 failed += 1
+        # Nettoyer après envoi
+        context.application.bot_data.get("pending_broadcasts", {}).pop(admin_id, None)
         await query.edit_message_text(
             f"✅ *Broadcast terminé !*\n\n✉️ Envoyé : *{sent}*\n❌ Échecs : *{failed}*",
             parse_mode="Markdown"
@@ -468,6 +481,11 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     elif action == "bc_cancel":
+        try:
+            admin_id = int(value)
+            context.application.bot_data.get("pending_broadcasts", {}).pop(admin_id, None)
+        except Exception:
+            pass
         await query.edit_message_text("❌ Broadcast annulé.")
         return
 
@@ -791,10 +809,16 @@ async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Aucun utilisateur actif trouvé.")
         return
 
+    # Stocker le message dans bot_data (pas callback_data — limite 64 octets Telegram)
+    admin_id = update.effective_user.id
+    if "pending_broadcasts" not in context.application.bot_data:
+        context.application.bot_data["pending_broadcasts"] = {}
+    context.application.bot_data["pending_broadcasts"][admin_id] = message_text
+
     confirm_keyboard = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton(f"✅ Envoyer à {len(users)} utilisateurs", callback_data=f"bc_confirm::{message_text[:200]}"),
-            InlineKeyboardButton("❌ Annuler", callback_data="bc_cancel::"),
+            InlineKeyboardButton(f"✅ Envoyer à {len(users)} utilisateurs", callback_data=f"bc_confirm:{admin_id}:"),
+            InlineKeyboardButton("❌ Annuler", callback_data=f"bc_cancel:{admin_id}:"),
         ]
     ])
 
@@ -816,32 +840,42 @@ async def cmd_myid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+def _esc(text: str) -> str:
+    """Escape special Markdown v1 characters in user-provided text."""
+    if not text:
+        return "?"
+    for ch in ["*", "_", "`", "["]:
+        text = text.replace(ch, f"\\{ch}")
+    return text
+
+
 async def cmd_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return
     msg = await update.message.reply_text("👥 Chargement des utilisateurs...")
     users = await get_all_users_detailed()
     if not users:
-        await msg.edit_text("Aucun utilisateur enregistré.")
+        await msg.edit_text(f"👥 Aucun utilisateur enregistré pour l'instant.")
         return
 
-    lines = [f"👥 *LISTE DES UTILISATEURS* ({len(users)} total)\n"]
+    lines = [f"👥 LISTE DES UTILISATEURS ({len(users)} total)\n"]
     for u in users[:30]:
-        uname = f"@{u['username']}" if u['username'] else "—"
+        uname = f"@{u['username']}" if u['username'] else "-"
         try:
             joined = datetime.fromisoformat(u["joined_at"]).strftime("%d/%m/%y")
         except Exception:
             joined = "?"
         briefing_icon = "🔔" if u["receive_briefing"] else "🔕"
         sub_icon = f"📡{u['sub_count']}" if u["sub_count"] else "📭"
+        name = (u['first_name'] or '?')[:20]
         lines.append(
-            f"`{u['user_id']}` {briefing_icon}{sub_icon} "
-            f"*{u['first_name'] or '?'}* {uname} — inscrit {joined}"
+            f"{u['user_id']} {briefing_icon}{sub_icon} {name} {uname} — {joined}"
         )
     if len(users) > 30:
-        lines.append(f"\n_...et {len(users)-30} autres. Utilise /userdata ID pour voir le détail._")
-    lines.append(f"\n💡 `/userdata <ID>` pour les détails d'un utilisateur")
-    await msg.edit_text("\n".join(lines), parse_mode="Markdown")
+        lines.append(f"\n...et {len(users)-30} autres.")
+    lines.append(f"\n/userdata ID — pour les détails")
+    # Texte simple sans Markdown pour éviter les erreurs de parsing
+    await msg.edit_text("\n".join(lines))
 
 
 async def cmd_userdata(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1028,6 +1062,20 @@ def main():
     if not TELEGRAM_BOT_TOKEN:
         logger.critical("TELEGRAM_BOT_TOKEN not set!")
         sys.exit(1)
+
+    # Empêcher le conflit 409 : si on tourne sur Replit (pas Railway), ne pas démarrer
+    on_railway = bool(os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("RAILWAY_SERVICE_ID"))
+    on_replit = bool(os.getenv("REPL_ID") or os.getenv("REPLIT_DEPLOYMENT"))
+    if on_replit and not on_railway:
+        logger.warning("Instance Replit détectée — bot désactivé localement pour éviter le conflit avec Railway.")
+        logger.warning("Le bot tourne sur Railway. Cette instance locale est arrêtée.")
+        print("\n" + "="*60)
+        print("⚠️  BOT DÉSACTIVÉ LOCALEMENT")
+        print("Le bot tourne sur Railway (production).")
+        print("Deux instances = conflit Telegram 409.")
+        print("Cette instance Replit est arrêtée automatiquement.")
+        print("="*60 + "\n")
+        sys.exit(0)
 
     logger.info(f"Starting {BOT_NAME} v{BOT_VERSION}")
     logger.info(f"Monitoring centers: {', '.join(CENTERS.keys())}")
