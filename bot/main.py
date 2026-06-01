@@ -29,7 +29,7 @@ from database import (
     init_db, add_or_update_user, subscribe_to_center, unsubscribe_from_center,
     get_user_subscriptions, get_center_status, get_historical_events, get_stats,
     toggle_briefing, get_all_users_detailed, get_user_detail,
-    get_subs_per_center, ban_user
+    get_subs_per_center, ban_user, get_all_active_users
 )
 from vfs_monitor import check_appointments_via_web
 from predictions import build_predictions, format_predictions_message, get_next_likely_opening
