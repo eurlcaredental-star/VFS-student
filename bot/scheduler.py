@@ -14,7 +14,7 @@ from config import (
 from database import (
     update_center_status, get_center_status,
     record_appointment_event, get_subscribers_for_center,
-    get_all_active_users, get_historical_events
+    get_all_active_users, get_briefing_users, get_historical_events
 )
 from vfs_monitor import check_all_centers
 from briefing import get_daily_briefing, get_alert_message
@@ -146,11 +146,11 @@ async def send_message_safe(user_id: int, text: str, parse_mode: str = "Markdown
 
 
 async def send_daily_briefing():
-    """Send daily briefing to all active users"""
+    """Send daily briefing to users who have it enabled"""
     if _bot is None:
         return
 
-    users = await get_all_active_users()
+    users = await get_briefing_users()
     logger.info(f"Sending daily briefing to {len(users)} users")
 
     for user_id, first_name in users:

@@ -145,6 +145,19 @@ async def get_subscribers_for_center(center_code: str) -> list:
 
 
 async def get_all_active_users() -> list:
+    """Retourne TOUS les utilisateurs actifs (broadcast + briefing)."""
+    conn = await get_conn()
+    try:
+        rows = await conn.fetch("""
+            SELECT user_id, first_name FROM users WHERE is_active = 1
+        """)
+        return [(row["user_id"], row["first_name"]) for row in rows]
+    finally:
+        await conn.close()
+
+
+async def get_briefing_users() -> list:
+    """Retourne uniquement les utilisateurs avec briefing activé."""
     conn = await get_conn()
     try:
         rows = await conn.fetch("""
