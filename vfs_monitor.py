@@ -46,7 +46,12 @@ NO_SLOT_PHRASES = [
     "temporarily unavailable",
     "currently not accepting",
     "no appointment available",
+    "no appointment available",
+    "aucun créneau de rendez-vous n'est actuellement disponible",
+    "de nouveaux créneaux s'ouvrent à intervalles réguliers",
 ]
+
+
 
 # Phrases/patterns indiquant des créneaux DISPONIBLES
 SLOT_PHRASES = [
