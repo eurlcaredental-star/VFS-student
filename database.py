@@ -7,10 +7,18 @@ from config import TIMEZONE
 
 TZ = pytz.timezone(TIMEZONE)
 
-DATABASE_URL = os.getenv("DATABASE_URL", "")
+def _get_db_url() -> str:
+    url = os.getenv("DATABASE_URL", "")
+    # asyncpg requires postgresql:// not postgres://
+    if url.startswith("postgres://"):
+        url = "postgresql://" + url[len("postgres://"):]
+    return url
 
 async def get_conn():
-    return await asyncpg.connect(DATABASE_URL)
+    url = _get_db_url()
+    if not url:
+        raise RuntimeError("DATABASE_URL n'est pas défini dans les variables d'environnement Railway.")
+    return await asyncpg.connect(url)
 
 async def init_db():
     conn = await get_conn()
