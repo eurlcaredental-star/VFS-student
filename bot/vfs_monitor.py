@@ -107,8 +107,10 @@ async def _login() -> bool:
         await _page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=30000)
         await asyncio.sleep(3)  # Laisser Cloudflare charger
 
-        # Attendre le formulaire
-        await _page.wait_for_selector('input[type="email"], input[name="email"], #email', timeout=15000)
+        # Laisser Cloudflare résoudre
+        await asyncio.sleep(8)
+        html = await _page.content()
+        logger.info(f"LOGIN PAGE: {html[:500]}")
 
         # Remplir email
         email_field = await _page.query_selector('input[type="email"], input[name="email"], #email')
