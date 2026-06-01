@@ -637,7 +637,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ── Admin broadcast conversationnel ─────────────────────────────────────
     if is_admin(user.id) and context.user_data.get("awaiting_broadcast"):
         context.user_data["awaiting_broadcast"] = False
-        await _do_broadcast(update, text, bot=context.bot)
+        await _do_broadcast(update, text, send_bot=context.bot)
         return
 
     # ── Boutons du clavier persistant ───────────────────────────────────────
@@ -769,33 +769,46 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await msg.edit_text(text, parse_mode="Markdown")
 
 
-async def _do_broadcast(update: Update, message_text: str, bot=None):
+async def _do_broadcast(update: Update, message_text: str, send_bot=None):
     """Envoie le broadcast directement à tous les utilisateurs actifs."""
-    users = await get_all_active_users()
+    try:
+        users = await get_all_active_users()
+    except Exception as db_err:
+        logger.error(f"Broadcast DB error: {db_err}")
+        await update.message.reply_text(
+            f"❌ Erreur base de données :\n<code>{db_err}</code>",
+            parse_mode="HTML"
+        )
+        return
+
     if not users:
-        await update.message.reply_text("❌ Aucun utilisateur actif trouvé.")
+        await update.message.reply_text("❌ Aucun utilisateur actif trouvé dans la DB.")
         return
 
     status_msg = await update.message.reply_text(
         f"📢 Envoi en cours à {len(users)} utilisateur(s)..."
     )
-    # Utiliser le bot passé en paramètre, ou celui de l'update
-    _bot = bot or update.effective_message.get_bot()
+    bot_to_use = send_bot or update.get_bot()
     sent, failed = 0, 0
     for uid, _ in users:
         try:
-            await _bot.send_message(chat_id=uid, text=message_text)
+            await bot_to_use.send_message(chat_id=uid, text=message_text)
             sent += 1
             await asyncio.sleep(0.05)
         except Exception as e:
             logger.warning(f"Broadcast failed for {uid}: {e}")
             failed += 1
 
-    await status_msg.edit_text(
-        f"✅ Message envoyé !\n\n"
-        f"✉️ Reçu par : {sent} utilisateur(s)\n"
-        f"❌ Échecs : {failed}"
-    )
+    try:
+        await status_msg.edit_text(
+            f"✅ Message envoyé !\n\n"
+            f"✉️ Reçu par : {sent} utilisateur(s)\n"
+            f"❌ Échecs : {failed}"
+        )
+    except Exception:
+        await update.message.reply_text(
+            f"✅ Broadcast terminé : {sent} envoyés, {failed} échecs"
+        )
 
 
 async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -805,7 +818,7 @@ async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if context.args:
         # Message fourni directement : /broadcast Votre texte
-        await _do_broadcast(update, " ".join(context.args), bot=context.bot)
+        await _do_broadcast(update, " ".join(context.args), send_bot=context.bot)
         return
 
     # Mode conversationnel : demander le message
