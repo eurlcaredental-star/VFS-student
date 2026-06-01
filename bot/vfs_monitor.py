@@ -61,6 +61,7 @@ async def check_appointments_via_web(center_code: str) -> Tuple[bool, int, Optio
            page = await context.new_page()
            await page.goto(f"{BASE}/appointment", wait_until="networkidle", timeout=30000)
            html = await page.content()
+           logger.info(f"PAGE: {html[:300]}")
            await browser.close()
            result = _analyse_text(html)
            if result is not None:
