@@ -26,14 +26,13 @@ NO_SLOT_PHRASES = [
    "veuillez réessayer plus tard",
    "temporarily unavailable",
    "currently not accepting",
-   "no appointment available",
+    "403201",
+    "json-formatter-container",
 ]
 
 SLOT_PHRASES = [
    "select a date",
    "choose a date",
-   "available appointment",
-   "book an appointment",
    "appointment available",
    "créneau disponible",
    "réserver un rendez-vous",
