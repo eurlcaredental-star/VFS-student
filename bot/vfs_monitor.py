@@ -1,152 +1,127 @@
 """
 VFS Global Monitor — Algeria Italy Student Visa
-API directe lift-api.vfsglobal.com avec httpx (pas de navigateur).
+API directe lift-api.vfsglobal.com/master/centerwithslots
+Sans login, sans token — curl_cffi imite Chrome natif.
 """
 import asyncio
+import json
 import logging
+import time
 from datetime import datetime
 from typing import Optional, Tuple
 import pytz
-import httpx
-from config import CENTERS, TIMEZONE, VFS_EMAIL, VFS_PASSWORD
+from config import CENTERS, TIMEZONE
 
 logger = logging.getLogger(__name__)
 TZ = pytz.timezone(TIMEZONE)
 
-API_BASE = "https://lift-api.vfsglobal.com"
-MISSION_CODE = "ITA"
-COUNTRY_CODE = "DZA"
+LIFT_API = "https://lift-api.vfsglobal.com"
+MISSION  = "ita"
+COUNTRY  = "dza"
+CULTURE  = "en-us"
+
+# Catégories à surveiller — on essaie plusieurs variantes
+CATEGORIES = [
+    "LSTUDENT",
+    "LNGSTUDENT",
+    "STUDENT",
+    "LONGSTAY",
+    "LSTSTUDENT",
+    "LNGSTUDY",
+]
 
 HEADERS = {
-    "User-Agent": "VFSGlobal/3.0.2 CFNetwork/1474 Darwin/23.0.0",
-    "Accept": "application/json",
-    "Accept-Language": "fr-FR,fr;q=0.9",
-    "Content-Type": "application/json",
-    "Origin": "https://visa.vfsglobal.com",
-    "Referer": "https://visa.vfsglobal.com/",
+    "accept": "application/json",
+    "accept-language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
+    "origin": "https://visa.vfsglobal.com",
+    "referer": "https://visa.vfsglobal.com/",
+    "route": f"{COUNTRY}/en/{MISSION}",
+    "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
 }
 
-# Token global — récupéré une fois, réutilisé
-_token: Optional[str] = None
 
-
-async def _login() -> bool:
-    """Se connecte à l'API VFS et récupère le token."""
-    global _token
+def _classify(txt: str, sc: int) -> str:
+    """Analyse la réponse API."""
+    if sc == 403:
+        return "block-403"
+    if sc == 429:
+        return "rate-limit"
+    if sc != 200:
+        return f"http-{sc}"
+    if not txt:
+        return "empty"
+    if '"centerName":null' in txt or txt.strip() in ("[]", "[{}]", "{}"):
+        return "no-slots"
     try:
-        logger.info("Login API VFS...")
-        async with httpx.AsyncClient(headers=HEADERS, timeout=30) as client:
-            response = await client.post(
-                f"{API_BASE}/user/login",
-                json={
-                    "username": VFS_EMAIL,
-                    "password": VFS_PASSWORD,
-                    "missionCode": MISSION_CODE,
-                    "countryCode": COUNTRY_CODE,
-                }
-            )
-            logger.info(f"Login status: {response.status_code}")
-            logger.info(f"Login response: {response.text[:300]}")
+        arr = json.loads(txt)
+        if isinstance(arr, list):
+            for item in arr:
+                if isinstance(item, dict):
+                    cname = item.get("centerName")
+                    err = item.get("error")
+                    if cname and (err is None or (isinstance(err, dict) and not err.get("code"))):
+                        return "SLOT"
+        return "no-slots"
+    except Exception:
+        return "parse-err"
 
-            if response.status_code == 200:
-                data = response.json()
-                token = (
-                    data.get("token") or
-                    data.get("access_token") or
-                    data.get("accessToken") or
-                    data.get("data", {}).get("token") or
-                    data.get("data", {}).get("accessToken")
-                )
-                if token:
-                    _token = token
-                    logger.info("Login réussi — token récupéré")
-                    return True
-                else:
-                    logger.warning(f"Token non trouvé dans: {data}")
-                    return False
-            else:
-                logger.warning(f"Login échoué: {response.status_code} — {response.text[:200]}")
-                return False
 
+async def _hit_url(url: str) -> Tuple[str, str, int]:
+    """Appelle l'URL avec curl_cffi (imite Chrome)."""
+    try:
+        from curl_cffi.requests import AsyncSession
+        async with AsyncSession(impersonate="chrome137") as s:
+            r = await s.get(url, headers=HEADERS, timeout=20)
+            txt = r.text or ""
+            status = _classify(txt, r.status_code)
+            logger.info(f"URL: {url} → {r.status_code} → {status} | {txt[:150]}")
+            return status, txt[:500], r.status_code
+    except ImportError:
+        # Fallback httpx si curl_cffi pas installé
+        import httpx
+        async with httpx.AsyncClient(timeout=20) as client:
+            r = await client.get(url, headers=HEADERS)
+            txt = r.text or ""
+            status = _classify(txt, r.status_code)
+            logger.info(f"[httpx] URL: {url} → {r.status_code} → {status} | {txt[:150]}")
+            return status, txt[:500], r.status_code
     except Exception as e:
-        logger.error(f"Erreur login: {e}")
-        return False
-
-
-async def _ensure_token() -> bool:
-    """S'assure qu'on a un token valide."""
-    global _token
-    if not _token:
-        return await _login()
-    return True
+        logger.warning(f"Erreur requête: {e}")
+        return "timeout-err", str(e)[:120], 0
 
 
 async def check_appointments_via_web(center_code: str) -> Tuple[bool, int, Optional[str]]:
-    """Vérifie les créneaux pour un centre via l'API directe."""
-    global _token
-
+    """Vérifie les créneaux pour un centre."""
     center_info = CENTERS.get(center_code, {})
     vac_id = center_info.get("vac_id", center_code)
 
-    try:
-        ok = await _ensure_token()
-        if not ok:
-            logger.warning(f"[{center_code}] Pas de token disponible")
-            return False, 0, None
+    # Essayer chaque catégorie
+    for cat in CATEGORIES:
+        url = f"{LIFT_API}/master/centerwithslots/{MISSION}/{COUNTRY}/{cat}/{CULTURE}"
+        status, body, sc = await _hit_url(url)
 
-        async with httpx.AsyncClient(timeout=30) as client:
-            auth_headers = {**HEADERS, "Authorization": f"Bearer {_token}"}
+        if status == "SLOT":
+            logger.info(f"[{center_code}] 🟢 CRÉNEAUX TROUVÉS — cat={cat}")
+            # Parser pour compter les slots
+            try:
+                arr = json.loads(body)
+                slots = [x for x in arr if isinstance(x, dict) and x.get("centerName")]
+                return True, len(slots), cat
+            except Exception:
+                return True, 1, cat
 
-            endpoints = [
-                f"{API_BASE}/appointment/slots/{COUNTRY_CODE}/{MISSION_CODE}/{vac_id}",
-                f"{API_BASE}/appointment/checkslots/{COUNTRY_CODE}/{MISSION_CODE}/{vac_id}",
-                f"{API_BASE}/slot/checkavailability/{COUNTRY_CODE}/{MISSION_CODE}/{vac_id}",
-                f"{API_BASE}/appointment/{COUNTRY_CODE}/{MISSION_CODE}/slots?vacId={vac_id}",
-            ]
+        elif status == "no-slots":
+            logger.info(f"[{center_code}] cat={cat} → no slots")
+            # On continue avec la prochaine catégorie mais on note que ça répond
+            continue
 
-            for endpoint in endpoints:
-                try:
-                    response = await client.get(endpoint, headers=auth_headers)
-                    logger.info(f"[{center_code}] {endpoint} → {response.status_code}: {response.text[:200]}")
+        elif status == "block-403":
+            logger.warning(f"[{center_code}] cat={cat} → 403 bloqué")
+            continue
 
-                    if response.status_code == 401:
-                        logger.info("Token expiré, re-login...")
-                        _token = None
-                        ok = await _login()
-                        if ok:
-                            auth_headers = {**HEADERS, "Authorization": f"Bearer {_token}"}
-                            response = await client.get(endpoint, headers=auth_headers)
+        await asyncio.sleep(0.5)
 
-                    if response.status_code == 200:
-                        data = response.json()
-                        logger.info(f"[{center_code}] Réponse: {data}")
-
-                        if isinstance(data, list) and len(data) > 0:
-                            return True, len(data), str(data[0])
-                        elif isinstance(data, dict):
-                            slots = (
-                                data.get("slots") or
-                                data.get("availableSlots") or
-                                data.get("data") or
-                                []
-                            )
-                            if slots and len(slots) > 0:
-                                return True, len(slots), str(slots[0])
-                            elif data.get("available") is True:
-                                return True, 1, None
-                            elif data.get("available") is False:
-                                return False, 0, None
-
-                except Exception as e:
-                    logger.warning(f"[{center_code}] Endpoint {endpoint} échoué: {e}")
-                    continue
-
-        logger.info(f"[{center_code}] Aucun créneau trouvé")
-        return False, 0, None
-
-    except Exception as e:
-        logger.error(f"[{center_code}] Erreur: {e}")
-        return False, 0, None
+    return False, 0, None
 
 
 async def check_all_centers() -> dict:
