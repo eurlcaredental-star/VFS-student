@@ -70,7 +70,7 @@ async def _hit_url(url: str) -> Tuple[str, str, int]:
     """Appelle l'URL avec curl_cffi (imite Chrome)."""
     try:
         from curl_cffi.requests import AsyncSession
-        async with AsyncSession(impersonate="chrome137") as s:
+        async with AsyncSession(impersonate="chrome120") as s:
             r = await s.get(url, headers=HEADERS, timeout=20)
             txt = r.text or ""
             status = _classify(txt, r.status_code)
