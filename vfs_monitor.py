@@ -22,10 +22,8 @@ CULTURE  = "en-us"
 
 # Catégories à surveiller — on essaie plusieurs variantes
 CATEGORIES = [
-    "STULNG",
-    "LNGSTUDENT",
     "STUDLNG",
-    "LONGSTAY",
+    "LNGSTUDENT",
 ]
 
 HEADERS = {
