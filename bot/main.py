@@ -1115,14 +1115,15 @@ def main():
         allowed_updates=Update.ALL_TYPES,
         drop_pending_updates=True
     )
-
-
-if __name__ == "__main__":
-    main()
-    
-    async def check_appointments_via_web(center_code: str):
+async def check_appointments_via_web(center_code: str):
     """Alias pour compatibilité avec main.py"""
     results = await check_all_centers()
 
     r = results.get(center_code, {})
     return r.get("has_slots", False), r.get("count", 0), r.get("earliest")
+ )
+
+if __name__ == "__main__":
+    main()
+    
+    
