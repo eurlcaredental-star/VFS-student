@@ -1,4 +1,3 @@
-"""
 VFS Global Monitor — Algeria Italy Student Visa
 Une seule requête toutes les 2 minutes — retourne tous les centres.
 """
