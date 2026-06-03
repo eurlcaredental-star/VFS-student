@@ -1,3 +1,4 @@
+"""
 VFS Global Monitor — Algeria Italy Student Visa
 Une seule requête toutes les 2 minutes — retourne tous les centres.
 """
@@ -31,7 +32,7 @@ HEADERS = {
 
 
 async def _fetch_url(url: str) -> Tuple[str, list]:
-    """Appelle l'URL - essaie curl_cffi puis httpx en fallback."""
+    """Appelle l'URL — essaie curl_cffi puis httpx en fallback."""
     try:
         from curl_cffi.requests import AsyncSession
         async with AsyncSession(impersonate="chrome120") as s:
@@ -149,10 +150,3 @@ async def check_all_centers() -> dict:
             }
 
     return results
-    
-    async def check_appointments_via_web(center_code: str):
-    """Alias pour compatibilité avec main.py"""
-    results = await check_all_centers()
-    r = results.get(center_code, {})
-    return r.get("has_slots", False), r.get("count", 0), r.get("earliest")
-
