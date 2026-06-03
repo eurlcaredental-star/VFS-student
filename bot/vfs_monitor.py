@@ -31,7 +31,7 @@ HEADERS = {
 
 
 async def _fetch_url(url: str) -> Tuple[str, list]:
-    """Appelle l'URL — essaie curl_cffi puis httpx en fallback."""
+    """Appelle l'URL - essaie curl_cffi puis httpx en fallback."""
     try:
         from curl_cffi.requests import AsyncSession
         async with AsyncSession(impersonate="chrome120") as s:
