@@ -1121,7 +1121,6 @@ async def check_appointments_via_web(center_code: str):
 
     r = results.get(center_code, {})
     return r.get("has_slots", False), r.get("count", 0), r.get("earliest")
- )
 
 if __name__ == "__main__":
     main()
