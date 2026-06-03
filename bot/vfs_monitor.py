@@ -119,7 +119,7 @@ async def check_appointments_via_web(center_code: str) -> Tuple[bool, int, Optio
             logger.warning(f"[{center_code}] cat={cat} → 403 bloqué")
             continue
 
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(3)
 
     return False, 0, None
 
@@ -145,5 +145,5 @@ async def check_all_centers() -> dict:
                 "error": str(e),
                 "checked_at": datetime.now(TZ).isoformat(),
             }
-        await asyncio.sleep(1)
+        await asyncio.sleep(5)
     return results
