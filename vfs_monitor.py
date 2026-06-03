@@ -1,4 +1,3 @@
-cat > /mnt/user-data/outputs/vfs_monitor.py << 'EOF'
 """
 VFS Global Monitor — Algeria Italy Student Visa
 Une seule requête toutes les 2 minutes — retourne tous les centres.
@@ -151,4 +150,3 @@ async def check_all_centers() -> dict:
             }
 
     return results
-EOF
