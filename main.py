@@ -665,6 +665,21 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "📨 Votre message a été transmis au support.\nNous vous répondrons dès que possible.",
             parse_mode="Markdown"
+            async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if is_admin(user.id):
+        return
+    username_part = f" (@{user.username})" if user.username else ""
+    caption = f"📩 *Media de {user.first_name}*{username_part}\n🆔 ID: `{user.id}`"
+    for admin_id in ADMIN_USER_IDS:
+        try:
+            if update.message.photo:
+                await context.bot.send_photo(chat_id=admin_id, photo=update.message.photo[-1].file_id, caption=caption, parse_mode="Markdown")
+            elif update.message.document:
+                await context.bot.send_document(chat_id=admin_id, document=update.message.document.file_id, caption=caption, parse_mode="Markdown")
+        except Exception as e:
+            logger.error(f"Erreur transfert media: {e}")
+    await update.message.reply_text("📨 Votre média a été transmis au support.")
         )
 
 
@@ -1122,6 +1137,9 @@ def main():
     app.add_handler(CommandHandler("myid", cmd_myid))
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
+    app.add_handler(MessageHandler(filters.PHOTO, media_handler))
+    app.add_handler(MessageHandler(filters.Document.ALL, media_handler))
+
 
     logger.info("Bot is running... Press Ctrl+C to stop.")
     app.run_polling(
