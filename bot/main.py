@@ -221,8 +221,12 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines.append("━━━━━━━━━━━━━━━━━━━━\n")
 
     for code, info in CENTERS.items():
-        try:
-            has_slots, count, earliest = await check_appointments_via_web(code)
+    try:
+        status_db = await get_center_status(code)
+        has_slots = status_db.get("has_slots", False) if status_db else False
+        count = status_db.get("count", 0) if status_db else 0
+        earliest = status_db.get("earliest") if status_db else None
+
             status_emoji = "✅" if has_slots else "❌"
             slots_info = f" ({count} créneaux)" if has_slots and count > 0 else ""
             date_info = f"\n   📅 Dispo : {earliest}" if has_slots and earliest else ""
