@@ -665,8 +665,15 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     username_part = f" (@{user.username})" if user.username else ""
     caption = f"📩 *Media de {user.first_name}*{username_part}\n🆔 ID: `{user.id}`"
-
-
+    for admin_id in ADMIN_USER_IDS:
+        try:
+            if update.message.photo:
+                await context.bot.send_photo(chat_id=admin_id, photo=update.message.photo[-1].file_id, caption=caption, parse_mode="Markdown")
+            elif update.message.document:
+                await context.bot.send_document(chat_id=admin_id, document=update.message.document.file_id, caption=caption, parse_mode="Markdown")
+        except Exception as e:
+            logger.error(f"Erreur media: {e}")
+    await update.message.reply_text("📨 Média transmis au support.")
 
 HARDCODED_ADMIN_ID = 1077263521  # anasfks — permanent, immuable
 
