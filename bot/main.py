@@ -630,17 +630,18 @@ async def cmd_guide_from_callback(query):
 
 
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle persistent keyboard button presses and conversational states."""
     text = update.message.text
     user = update.effective_user
 
-    # ── Admin broadcast conversationnel ─────────────────────────────────────
+    if is_admin(user.id):
+        if await handle_admin_reply(update, context):
+            return
+
     if is_admin(user.id) and context.user_data.get("awaiting_broadcast"):
         context.user_data["awaiting_broadcast"] = False
         await _do_broadcast(update, text, send_bot=context.bot)
         return
 
-    # ── Boutons du clavier persistant ───────────────────────────────────────
     if text == "🔔 Mes alertes":
         await cmd_mycenters(update, context)
     elif text == "📊 Statut VFS":
@@ -653,6 +654,18 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await cmd_tip(update, context)
     elif text == "❓ Aide":
         await cmd_help(update, context)
+    else:
+        await forward_to_admin(update, context)
+        await update.message.reply_text("📨 Message transmis au support.")
+
+
+async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if is_admin(user.id):
+        return
+    username_part = f" (@{user.username})" if user.username else ""
+    caption = f"📩 *Media de {user.first_name}*{username_part}\n🆔 ID: `{user.id}`"
+
 
 
 HARDCODED_ADMIN_ID = 1077263521  # anasfks — permanent, immuable
