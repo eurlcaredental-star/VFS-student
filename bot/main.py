@@ -669,7 +669,7 @@ def is_admin(user_id: int) -> bool:
     raw = os.getenv("ADMIN_USER_IDS", "")
     live_ids = [int(x.strip()) for x in raw.split(",") if x.strip().isdigit()]
     return user_id in live_ids
-    async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+      async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if is_admin(user.id):
         return
