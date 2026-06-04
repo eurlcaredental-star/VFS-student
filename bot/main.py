@@ -659,7 +659,17 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("📨 Message transmis au support.")
 
 
-async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+HARDCODED_ADMIN_ID = 1077263521  # anasfks — permanent, immuable
+
+def is_admin(user_id: int) -> bool:
+    if user_id == HARDCODED_ADMIN_ID:
+        return True
+    # Re-lit l'env var à chaque appel pour éviter les problèmes de redémarrage
+    raw = os.getenv("ADMIN_USER_IDS", "")
+    live_ids = [int(x.strip()) for x in raw.split(",") if x.strip().isdigit()]
+    return user_id in live_ids
+    async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if is_admin(user.id):
         return
@@ -674,16 +684,6 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Erreur media: {e}")
     await update.message.reply_text("📨 Média transmis au support.")
-
-HARDCODED_ADMIN_ID = 1077263521  # anasfks — permanent, immuable
-
-def is_admin(user_id: int) -> bool:
-    if user_id == HARDCODED_ADMIN_ID:
-        return True
-    # Re-lit l'env var à chaque appel pour éviter les problèmes de redémarrage
-    raw = os.getenv("ADMIN_USER_IDS", "")
-    live_ids = [int(x.strip()) for x in raw.split(",") if x.strip().isdigit()]
-    return user_id in live_ids
 
 
 async def _build_stats_text() -> str:
