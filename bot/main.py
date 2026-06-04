@@ -665,11 +665,12 @@ HARDCODED_ADMIN_ID = 1077263521  # anasfks — permanent, immuable
 def is_admin(user_id: int) -> bool:
     if user_id == HARDCODED_ADMIN_ID:
         return True
-    # Re-lit l'env var à chaque appel pour éviter les problèmes de redémarrage
     raw = os.getenv("ADMIN_USER_IDS", "")
     live_ids = [int(x.strip()) for x in raw.split(",") if x.strip().isdigit()]
     return user_id in live_ids
-      async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+
+async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if is_admin(user.id):
         return
