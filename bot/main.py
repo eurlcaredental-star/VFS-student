@@ -1130,7 +1130,7 @@ def main():
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     app.add_handler(MessageHandler(filters.PHOTO, media_handler))
-app.add_handler(MessageHandler(filters.Document.ALL, media_handler))
+    app.add_handler(MessageHandler(filters.Document.ALL, media_handler))
 
 
     logger.info("Bot is running... Press Ctrl+C to stop.")
