@@ -38,6 +38,8 @@ from briefing import (
     get_life_guide, get_document_checklist, get_daily_tip
 )
 from scheduler import setup_scheduler, check_and_alert, send_message_safe
+from messaging import forward_to_admin, handle_admin_reply
+
 
 _log_handlers = [logging.StreamHandler(sys.stdout)]
 _log_file = os.path.join(os.path.dirname(__file__), "bot.log")
