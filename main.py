@@ -10,6 +10,7 @@ import os
 import sys
 from datetime import datetime
 from typing import Optional
+from messaging import forward_to_admin, handle_admin_reply, cmd_contact
 
 import pytz
 from telegram import (
@@ -634,6 +635,11 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     user = update.effective_user
 
+    # ── Réponse admin à un message utilisateur ──────────────────────────────
+    if is_admin(user.id):
+        if await handle_admin_reply(update, context):
+            return
+
     # ── Admin broadcast conversationnel ─────────────────────────────────────
     if is_admin(user.id) and context.user_data.get("awaiting_broadcast"):
         context.user_data["awaiting_broadcast"] = False
@@ -653,6 +659,13 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await cmd_tip(update, context)
     elif text == "❓ Aide":
         await cmd_help(update, context)
+    else:
+        # ── Message libre → transférer à l'admin ────────────────────────────
+        await forward_to_admin(update, context)
+        await update.message.reply_text(
+            "📨 Votre message a été transmis au support.\nNous vous répondrons dès que possible.",
+            parse_mode="Markdown"
+        )
 
 
 HARDCODED_ADMIN_ID = 1077263521  # anasfks — permanent, immuable
