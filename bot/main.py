@@ -223,7 +223,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines.append("━━━━━━━━━━━━━━━━━━━━\n")
 
     for code, info in CENTERS.items():
-    try:
+        try:
             status_db = await get_center_status(code)
             has_slots = status_db.get("has_slots", False) if status_db else False
             count = status_db.get("count", 0) if status_db else 0
