@@ -672,8 +672,33 @@ def is_admin(user_id: int) -> bool:
 
 async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
+    
+    # Admin → broadcast photo/document à tous les abonnés
     if is_admin(user.id):
+        users = await get_all_active_users()
+        sent, failed = 0, 0
+        for uid, _ in users:
+            try:
+                if update.message.photo:
+                    await context.bot.send_photo(
+                        chat_id=uid,
+                        photo=update.message.photo[-1].file_id,
+                        caption=update.message.caption or ""
+                    )
+                elif update.message.document:
+                    await context.bot.send_document(
+                        chat_id=uid,
+                        document=update.message.document.file_id,
+                        caption=update.message.caption or ""
+                    )
+                sent += 1
+                await asyncio.sleep(0.05)
+            except Exception:
+                failed += 1
+        await update.message.reply_text(f"✅ Envoyé à {sent} abonnés • {failed} échecs")
         return
+
+    # Utilisateur → transfère à l'admin
     username_part = f" (@{user.username})" if user.username else ""
     caption = f"📩 *Media de {user.first_name}*{username_part}\n🆔 ID: `{user.id}`"
     for admin_id in ADMIN_USER_IDS:
