@@ -663,6 +663,10 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await forward_to_admin(update, context)
         await update.message.reply_text("📨 Message transmis au support.")
 
+async def forward_to_admin(update, context, override_text=None):
+    user = update.effective_user
+    text = override_text or update.message.text
+
 
 
 HARDCODED_ADMIN_ID = 1077263521  # anasfks — permanent, immuable
