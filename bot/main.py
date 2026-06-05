@@ -1177,6 +1177,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     app.add_handler(MessageHandler(filters.PHOTO, media_handler))
     app.add_handler(MessageHandler(filters.Document.ALL, media_handler))
+    app.add_handler(CommandHandler("feedback", cmd_feedback))
 
 
     logger.info("Bot is running... Press Ctrl+C to stop.")
