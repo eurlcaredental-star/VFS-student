@@ -1050,6 +1050,8 @@ async def post_init(application: Application):
         BotCommand("briefing_on", "🔔 Activer le briefing matin"),
         BotCommand("briefing_off", "🔕 Désactiver le briefing"),
         BotCommand("help", "❓ Aide & commandes"),
+        BotCommand("feedback", "📝 Envoyer un feedback"),
+
     ]
 
     admin_only_commands = [
