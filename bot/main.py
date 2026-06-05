@@ -716,6 +716,21 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Erreur media: {e}")
     await update.message.reply_text("📨 Média transmis au support.")
 
+async def cmd_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    args = context.args
+    if not args:
+        await update.message.reply_text(
+            "📝 *Envoyer un feedback*\n\n"
+            "Usage : `/feedback votre message ici`\n\n"
+            "Exemple : `/feedback Le bot est super utile !`",
+            parse_mode="Markdown"
+        )
+        return
+    feedback_text = " ".join(args)
+    await forward_to_admin(update, context, override_text=f"📝 *FEEDBACK de {user.first_name}*\n\n{feedback_text}")
+    await update.message.reply_text("✅ Merci pour votre feedback !")
+
 
 async def _build_stats_text() -> str:
     stats = await get_stats()
