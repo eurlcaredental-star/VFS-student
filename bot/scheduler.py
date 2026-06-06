@@ -19,6 +19,10 @@ from database import (
 from vfs_monitor import check_all_centers
 from briefing import get_daily_briefing, get_alert_message
 from predictions import build_predictions
+from vfs_monitor import set_alert_callback
+
+# puis dans setup_scheduler :
+set_alert_callback(lambda msg: send_message_safe(admin_id, msg))
 
 logger = logging.getLogger(__name__)
 TZ = pytz.timezone(TIMEZONE)
