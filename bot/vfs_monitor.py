@@ -179,8 +179,9 @@ async def _fetch_url(url: str) -> Tuple[str, list]:
 
 
 async def _verify_slots() -> Tuple[str, list]:
-    """Double vérification — si SLOT détecté, confirme avec une 2e requête."""
+    global _last_valid_result, _last_valid_time
     for cat in CATEGORIES:
+
         url = f"{LIFT_API}/master/centerwithslots/{MISSION}/{COUNTRY}/{cat}/{CULTURE}"
         status, slots = await _fetch_url(url)
 
