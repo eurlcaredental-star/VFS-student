@@ -1,10 +1,13 @@
 """
 VFS Global Monitor — Algeria Italy Student Visa
-Une seule requête toutes les 2 minutes — retourne tous les centres.
+API directe lift-api.vfsglobal.com/master/centerwithslots
+Anti-bot amélioré : rotation User-Agent, backoff exponentiel, cache.
 """
 import asyncio
 import json
 import logging
+import random
+import time
 from datetime import datetime
 from typing import Optional, Tuple, List
 import pytz
@@ -18,44 +21,37 @@ MISSION  = "ita"
 COUNTRY  = "dza"
 CULTURE  = "en-us"
 
-# Catégories confirmées — on essaie dans l'ordre
 CATEGORIES = ["STUDLNG", "LNGSTUDENT"]
 
-HEADERS = {
-    "accept": "application/json",
-    "accept-language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
-    "origin": "https://visa.vfsglobal.com",
-    "referer": "https://visa.vfsglobal.com/",
-    "route": f"{COUNTRY}/en/{MISSION}",
-    "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-}
+# Rotation de User-Agents — paraît comme différents appareils
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_2_1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
+]
+
+# Cache du dernier résultat valide
+_last_valid_result: Optional[dict] = None
+_last_valid_time: float = 0
+_consecutive_failures: int = 0
+_backoff_until: float = 0
 
 
-async def _fetch_url(url: str) -> Tuple[str, list]:
-    """Appelle l'URL — essaie curl_cffi puis httpx en fallback."""
-    try:
-        from curl_cffi.requests import AsyncSession
-        async with AsyncSession(impersonate="chrome120") as s:
-            r = await s.get(url, headers=HEADERS, timeout=20)
-            txt = r.text or ""
-            logger.info(f"[curl_cffi] {r.status_code} | {txt[:200]}")
-            return _parse(txt, r.status_code)
-    except ImportError:
-        pass
-    except Exception as e:
-        logger.warning(f"curl_cffi erreur: {e}")
-
-    # Fallback httpx
-    try:
-        import httpx
-        async with httpx.AsyncClient(timeout=20) as client:
-            r = await client.get(url, headers=HEADERS)
-            txt = r.text or ""
-            logger.info(f"[httpx] {r.status_code} | {txt[:200]}")
-            return _parse(txt, r.status_code)
-    except Exception as e:
-        logger.warning(f"httpx erreur: {e}")
-        return "error", []
+def _get_headers() -> dict:
+    """Headers avec User-Agent aléatoire."""
+    return {
+        "accept": "application/json",
+        "accept-language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
+        "origin": "https://visa.vfsglobal.com",
+        "referer": "https://visa.vfsglobal.com/",
+        "route": f"{COUNTRY}/en/{MISSION}",
+        "user-agent": random.choice(USER_AGENTS),
+        "cache-control": "no-cache",
+        "pragma": "no-cache",
+    }
 
 
 def _parse(txt: str, sc: int) -> Tuple[str, list]:
@@ -90,23 +86,90 @@ def _parse(txt: str, sc: int) -> Tuple[str, list]:
         return "parse-err", []
 
 
+async def _fetch_url(url: str, attempt: int = 0) -> Tuple[str, list]:
+    """Appelle l'URL avec backoff exponentiel."""
+    global _consecutive_failures, _backoff_until
+
+    # Vérifier si on est en backoff
+    if time.time() < _backoff_until:
+        wait = _backoff_until - time.time()
+        logger.info(f"Backoff actif — {wait:.0f}s restantes")
+        return "backoff", []
+
+    try:
+        from curl_cffi.requests import AsyncSession
+        impersonate = random.choice(["chrome120", "chrome124", "chrome131"])
+        async with AsyncSession(impersonate=impersonate) as s:
+            r = await s.get(url, headers=_get_headers(), timeout=20)
+            txt = r.text or ""
+            status, slots = _parse(txt, r.status_code)
+            logger.info(f"[curl_cffi/{impersonate}] {r.status_code} → {status} | {txt[:150]}")
+
+            if status == "rate-limit":
+                _consecutive_failures += 1
+                # Backoff exponentiel : 30s, 60s, 120s, 240s max
+                wait = min(30 * (2 ** (_consecutive_failures - 1)), 240)
+                _backoff_until = time.time() + wait
+                logger.warning(f"Rate limit — backoff {wait}s (échec #{_consecutive_failures})")
+            else:
+                _consecutive_failures = 0
+                _backoff_until = 0
+
+            return status, slots
+
+    except ImportError:
+        pass
+    except Exception as e:
+        logger.warning(f"curl_cffi erreur: {e}")
+
+    # Fallback httpx
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=20) as client:
+            r = await client.get(url, headers=_get_headers())
+            txt = r.text or ""
+            status, slots = _parse(txt, r.status_code)
+            logger.info(f"[httpx] {r.status_code} → {status} | {txt[:150]}")
+            return status, slots
+    except Exception as e:
+        logger.warning(f"httpx erreur: {e}")
+        return "error", []
+
+
 async def _fetch_slots() -> Tuple[str, list]:
-    """Essaie chaque catégorie jusqu'à avoir une réponse valide."""
+    """Essaie chaque catégorie avec backoff et cache."""
+    global _last_valid_result, _last_valid_time
+
     for cat in CATEGORIES:
         url = f"{LIFT_API}/master/centerwithslots/{MISSION}/{COUNTRY}/{cat}/{CULTURE}"
         status, slots = await _fetch_url(url)
         logger.info(f"cat={cat} → {status} | {len(slots)} slots")
 
         if status == "SLOT":
+            _last_valid_result = {"status": "SLOT", "slots": slots}
+            _last_valid_time = time.time()
             return "SLOT", slots
+
         elif status == "no-slots":
+            _last_valid_result = {"status": "no-slots", "slots": []}
+            _last_valid_time = time.time()
             return "no-slots", []
-        elif status == "rate-limit":
-            # Attendre et réessayer avec la prochaine catégorie
+
+        elif status in ("rate-limit", "backoff"):
+            # Utiliser le cache si disponible et récent (moins de 10 minutes)
+            if _last_valid_result and (time.time() - _last_valid_time) < 600:
+                logger.info(f"Cache utilisé (âge: {time.time() - _last_valid_time:.0f}s)")
+                return _last_valid_result["status"], _last_valid_result["slots"]
             await asyncio.sleep(5)
             continue
+
         else:
             continue
+
+    # Dernier recours — cache
+    if _last_valid_result and (time.time() - _last_valid_time) < 600:
+        logger.info("Cache utilisé en dernier recours")
+        return _last_valid_result["status"], _last_valid_result["slots"]
 
     return "no-slots", []
 
@@ -119,7 +182,7 @@ async def check_all_centers() -> dict:
     status, slots = await _fetch_slots()
     logger.info(f"Résultat final: {status} | {len(slots)} slots trouvés")
 
-    # Mapper les slots par centre via isoCode ou vac_id
+    # Mapper les slots par centre
     slots_by_center = {}
     for slot in slots:
         iso = (slot.get("isoCode") or "").upper()
@@ -151,10 +214,9 @@ async def check_all_centers() -> dict:
 
     return results
 
+
 async def check_appointments_via_web(center_code: str):
     """Alias pour compatibilité avec main.py"""
     results = await check_all_centers()
     r = results.get(center_code, {})
     return r.get("has_slots", False), r.get("count", 0), r.get("earliest")
-
-
