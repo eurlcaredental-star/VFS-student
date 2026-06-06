@@ -179,8 +179,9 @@ async def _fetch_url(url: str) -> Tuple[str, list]:
 
 
 async def _verify_slots() -> Tuple[str, list]:
-    """Double vérification — si SLOT détecté, confirme avec une 2e requête."""
+    global _last_valid_result, _last_valid_time
     for cat in CATEGORIES:
+
         url = f"{LIFT_API}/master/centerwithslots/{MISSION}/{COUNTRY}/{cat}/{CULTURE}"
         status, slots = await _fetch_url(url)
 
@@ -199,7 +200,6 @@ async def _verify_slots() -> Tuple[str, list]:
             return "no-slots", []
 
         elif status in ("rate-limit", "backoff"):
-            global _last_valid_result, _last_valid_time
             if _last_valid_result and (time.time() - _last_valid_time) < 600:
                 logger.info(f"Cache utilisé (âge: {time.time() - _last_valid_time:.0f}s)")
                 return _last_valid_result["status"], _last_valid_result["slots"]
@@ -207,8 +207,7 @@ async def _verify_slots() -> Tuple[str, list]:
             continue
         else:
             continue
-
-    global _last_valid_result, _last_valid_time
+            
     if _last_valid_result and (time.time() - _last_valid_time) < 600:
         return _last_valid_result["status"], _last_valid_result["slots"]
 
