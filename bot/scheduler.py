@@ -20,7 +20,6 @@ from vfs_monitor import check_all_centers
 from briefing import get_daily_briefing, get_alert_message
 from predictions import build_predictions
 from vfs_monitor import set_alert_callback
-from vfs_monitor import set_alert_callback
 
 logger = logging.getLogger(__name__)
 TZ = pytz.timezone(TIMEZONE)
@@ -33,11 +32,12 @@ _previous_statuses = {}
 def setup_scheduler(bot) -> AsyncIOScheduler:
     global _scheduler, _bot
     _bot = bot
-for admin_id in ADMIN_USER_IDS:
-    set_alert_callback(lambda msg: send_message_safe(admin_id, msg))
-    break
+    for admin_id in ADMIN_USER_IDS:
+        set_alert_callback(lambda msg: send_message_safe(admin_id, msg))
+        break
 
     scheduler = AsyncIOScheduler(timezone=TZ)
+
 
     scheduler.add_job(
         check_and_alert,
