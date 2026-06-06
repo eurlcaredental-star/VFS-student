@@ -9,7 +9,9 @@ from apscheduler.triggers.cron import CronTrigger
 
 from config import (
     CHECK_INTERVAL_SECONDS, TIMEZONE, CENTERS,
-    BRIEFING_HOUR, BRIEFING_MINUTE
+    BRIEFING_HOUR, BRIEFING_MINUTE, ADMIN_USER_IDS
+)
+
 )
 from database import (
     update_center_status, get_center_status,
