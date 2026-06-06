@@ -12,7 +12,6 @@ from config import (
     BRIEFING_HOUR, BRIEFING_MINUTE, ADMIN_USER_IDS
 )
 
-)
 from database import (
     update_center_status, get_center_status,
     record_appointment_event, get_subscribers_for_center,
