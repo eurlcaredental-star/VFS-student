@@ -32,16 +32,18 @@ _previous_statuses = {}
 
 def setup_scheduler(bot) -> AsyncIOScheduler:
     global _scheduler, _bot
+
     from vfs_monitor import set_alert_callback
     from config import ADMIN_USER_IDS
+
     for admin_id in ADMIN_USER_IDS:
-    set_alert_callback(lambda msg, aid=admin_id: asyncio.create_task(send_message_safe(aid, msg)))
-    break
+        set_alert_callback(
+            lambda msg, aid=admin_id:
+            asyncio.create_task(send_message_safe(aid, msg))
+        )
+        break
 
     _bot = bot
-    for admin_id in ADMIN_USER_IDS:
-        set_alert_callback(lambda msg: send_message_safe(admin_id, msg))
-        break
 
     scheduler = AsyncIOScheduler(timezone=TZ)
 
@@ -79,7 +81,7 @@ def setup_scheduler(bot) -> AsyncIOScheduler:
 
 
 async def check_and_alert():
-    """Main monitoring function — checks all centers and sends alerts"""
+    """Main monitoring function â checks all centers and sends alerts"""
     global _previous_statuses
 
     logger.info(f"[{datetime.now(TZ).strftime('%H:%M:%S')}] Checking VFS appointments...")
@@ -101,7 +103,7 @@ async def check_and_alert():
         await update_center_status(center_code, has_slots, count, earliest)
 
         if has_slots and not prev_had_slots:
-            logger.info(f"🚨 SLOTS OPENED at {center_code}!")
+            logger.info(f"ð¨ SLOTS OPENED at {center_code}!")
             await record_appointment_event(center_code, "SLOTS_OPENED", count, earliest)
             await notify_subscribers(center_code, has_slots=True, count=count, earliest=earliest)
 
@@ -166,7 +168,7 @@ async def send_daily_briefing():
     logger.info(f"Sending daily briefing to {len(users)} users")
 
     for user_id, first_name in users:
-        message = get_daily_briefing(first_name or "cher(e) étudiant(e)")
+        message = get_daily_briefing(first_name or "cher(e) Ã©tudiant(e)")
         await send_message_safe(user_id, message, parse_mode="Markdown")
         await asyncio.sleep(0.05)
 
