@@ -124,39 +124,36 @@ async def _fetch_url(url: str) -> Tuple[str, list]:
 async def _fetch_slots() -> Tuple[str, list]:
     global _last_valid_result, _last_valid_time
 
-    for cat in CATEGORIES:
-        url = f"{LIFT_API}/master/centerwithslots/{MISSION}/{COUNTRY}/{cat}/{CULTURE}"
+    urls = [
+        f"{LIFT_API}/master/centerwithslots/{MISSION}/{COUNTRY}/LNGSTUDENT/{CULTURE}",
+        f"{LIFT_API}/appointment/CheckIsSlotAvailable/{COUNTRY}/{MISSION}/LNGSTUDENT/en-us",
+        f"{LIFT_API}/master/centerwithslots/{MISSION}/{COUNTRY}/LNGSTUDENT/{CULTURE}?vacId=ANN",
+        f"{LIFT_API}/master/centerwithslots/{MISSION}/{COUNTRY}/LNGSTUDENT/{CULTURE}?vacId=ALG",
+        f"{LIFT_API}/master/centerwithslots/{MISSION}/{COUNTRY}/LNGSTUDENT/{CULTURE}?vacId=ORA",
+        f"{LIFT_API}/master/centerwithslots/{MISSION}/{COUNTRY}/LNGSTUDENT/{CULTURE}?vacId=CON",
+        f"{LIFT_API}/master/centerwithslots/{MISSION}/{COUNTRY}/LNGSTUDENT/{CULTURE}?vacId=TLE",
+    ]
+
+    for url in urls:
         status, slots = await _fetch_url(url)
-        logger.info(f"cat={cat} → {status} | {len(slots)} slots")
+        logger.info(f"URL: {url[-50:]} → {status} | {len(slots)} slots")
 
         if status == "SLOT":
             _last_valid_result = {"status": "SLOT", "slots": slots}
             _last_valid_time = time.time()
             return "SLOT", slots
-
         elif status == "no-slots":
             _last_valid_result = {"status": "no-slots", "slots": []}
             _last_valid_time = time.time()
             return "no-slots", []
-
         elif status in ("rate-limit", "block"):
-            # Utiliser le cache si disponible et récent
             if _last_valid_result and (time.time() - _last_valid_time) < CACHE_TTL:
-                age = int(time.time() - _last_valid_time)
-                logger.info(f"Cache utilisé (âge: {age}s) suite à {status}")
                 return _last_valid_result["status"], _last_valid_result["slots"]
-            await asyncio.sleep(5)
+            await asyncio.sleep(2)
             continue
-
-        else:
-            continue
-
-    # Dernier recours — cache
-    if _last_valid_result and (time.time() - _last_valid_time) < CACHE_TTL:
-        logger.info("Cache utilisé en dernier recours")
-        return _last_valid_result["status"], _last_valid_result["slots"]
 
     return "no-slots", []
+
 
 
 async def check_all_centers() -> dict:
