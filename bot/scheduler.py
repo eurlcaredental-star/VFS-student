@@ -32,6 +32,12 @@ _previous_statuses = {}
 
 def setup_scheduler(bot) -> AsyncIOScheduler:
     global _scheduler, _bot
+    from vfs_monitor import set_alert_callback
+from config import ADMIN_USER_IDS
+for admin_id in ADMIN_USER_IDS:
+    set_alert_callback(lambda msg, aid=admin_id: asyncio.create_task(send_message_safe(aid, msg)))
+    break
+
     _bot = bot
     for admin_id in ADMIN_USER_IDS:
         set_alert_callback(lambda msg: send_message_safe(admin_id, msg))
