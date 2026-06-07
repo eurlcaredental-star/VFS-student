@@ -1,16 +1,10 @@
 """
 VFS Global Monitor — Algeria Italy Student Visa
-Version améliorée :
-- Rotation User-Agent + impersonate
-- Backoff exponentiel + cache
-- Double vérification avant alerte
-- Alerte admin si trop d'échecs
-- Fréquence intelligente selon l'heure
+Version stable + cache + alerte admin.
 """
 import asyncio
 import json
 import logging
-import random
 import time
 from datetime import datetime
 from typing import Optional, Tuple
@@ -27,65 +21,30 @@ CULTURE  = "en-us"
 
 CATEGORIES = ["LNGSTUDENT", "STUDLNG"]
 
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_2_1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
-]
+HEADERS = {
+    "accept": "application/json",
+    "accept-language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
+    "origin": "https://visa.vfsglobal.com",
+    "referer": "https://visa.vfsglobal.com/",
+    "route": f"{COUNTRY}/en/{MISSION}",
+    "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+}
 
-IMPERSONATES = ["chrome120", "chrome124", "chrome131"]
-
-# État global
+# Cache du dernier résultat valide
 _last_valid_result: Optional[dict] = None
 _last_valid_time: float = 0
 _consecutive_failures: int = 0
-_backoff_until: float = 0
 _admin_alerted: bool = False
-
-# Callback pour alerter l'admin (sera initialisé par scheduler.py)
-_alert_admin_callback = None
+_alert_callback = None
 
 MAX_FAILURES_BEFORE_ALERT = 10
+CACHE_TTL = 600  # 10 minutes
 
 
 def set_alert_callback(callback):
-    """Permet au scheduler d'enregistrer une fonction d'alerte admin."""
-    global _alert_admin_callback
-    _alert_admin_callback = callback
-
-
-def get_check_interval() -> int:
-    """
-    Retourne l'intervalle de vérification selon l'heure Alger.
-    Plus fréquent entre 8h-12h et 14h-17h (heures d'ouverture VFS).
-    """
-    now = datetime.now(TZ)
-    hour = now.hour
-    # Heures creuses VFS : vérification toutes les 6 minutes
-    if 0 <= hour < 7 or hour >= 22:
-        return 360
-    # Heures de pointe : vérification toutes les 3 minutes
-    elif (8 <= hour <= 12) or (14 <= hour <= 17):
-        return 180
-    # Heures normales : toutes les 4 minutes
-    else:
-        return 250
-
-
-def _get_headers() -> dict:
-    return {
-        "accept": "application/json",
-        "accept-language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
-        "origin": "https://visa.vfsglobal.com",
-        "referer": "https://visa.vfsglobal.com/",
-        "route": f"{COUNTRY}/en/{MISSION}",
-        "user-agent": random.choice(USER_AGENTS),
-        "cache-control": "no-cache",
-        "pragma": "no-cache",
-    }
+    """Enregistre la fonction d'alerte admin."""
+    global _alert_callback
+    _alert_callback = callback
 
 
 def _parse(txt: str, sc: int) -> Tuple[str, list]:
@@ -118,43 +77,29 @@ def _parse(txt: str, sc: int) -> Tuple[str, list]:
 
 
 async def _fetch_url(url: str) -> Tuple[str, list]:
-    """Requête avec rotation User-Agent et impersonate."""
-    global _consecutive_failures, _backoff_until, _admin_alerted
-
-    if time.time() < _backoff_until:
-        wait = _backoff_until - time.time()
-        logger.info(f"Backoff actif — {wait:.0f}s restantes")
-        return "backoff", []
+    global _consecutive_failures, _admin_alerted
 
     try:
         from curl_cffi.requests import AsyncSession
-        imp = random.choice(IMPERSONATES)
-        async with AsyncSession(impersonate=imp) as s:
-            r = await s.get(url, headers=_get_headers(), timeout=20)
+        async with AsyncSession(impersonate="chrome120") as s:
+            r = await s.get(url, headers=HEADERS, timeout=20)
             txt = r.text or ""
+            logger.info(f"[curl_cffi] {r.status_code} | {txt[:200]}")
             status, slots = _parse(txt, r.status_code)
-            logger.info(f"[curl_cffi/{imp}] {r.status_code} → {status} | {txt[:150]}")
 
             if status in ("rate-limit", "block", "error", "empty", "parse-err"):
                 _consecutive_failures += 1
-                if status == "rate-limit":
-                    wait = min(30 * (2 ** (_consecutive_failures - 1)), 240)
-                    _backoff_until = time.time() + wait
-                    logger.warning(f"Rate limit — backoff {wait}s (échec #{_consecutive_failures})")
-
-                # Alerte admin si trop d'échecs
                 if _consecutive_failures >= MAX_FAILURES_BEFORE_ALERT and not _admin_alerted:
                     _admin_alerted = True
-                    if _alert_admin_callback:
-                        asyncio.create_task(_alert_admin_callback(
-                            f"⚠️ *Alerte bot VFS*\n\n"
-                            f"{_consecutive_failures} échecs consécutifs sur l'API VFS.\n"
+                    if _alert_callback:
+                        asyncio.create_task(_alert_callback(
+                            f"⚠️ *Alerte VFS Monitor*\n\n"
+                            f"{_consecutive_failures} échecs consécutifs.\n"
                             f"Dernière erreur : `{status}`\n"
                             f"Le bot continue de surveiller."
                         ))
             else:
                 _consecutive_failures = 0
-                _backoff_until = 0
                 _admin_alerted = False
 
             return status, slots
@@ -167,62 +112,51 @@ async def _fetch_url(url: str) -> Tuple[str, list]:
     try:
         import httpx
         async with httpx.AsyncClient(timeout=20) as client:
-            r = await client.get(url, headers=_get_headers())
+            r = await client.get(url, headers=HEADERS)
             txt = r.text or ""
-            status, slots = _parse(txt, r.status_code)
-            logger.info(f"[httpx] {r.status_code} → {status} | {txt[:150]}")
-            return status, slots
+            logger.info(f"[httpx] {r.status_code} | {txt[:200]}")
+            return _parse(txt, r.status_code)
     except Exception as e:
         logger.warning(f"httpx erreur: {e}")
-        _consecutive_failures += 1
         return "error", []
-
-
-async def _verify_slots() -> Tuple[str, list]:
-    global _last_valid_result, _last_valid_time
-    for cat in CATEGORIES:
-
-        url = f"{LIFT_API}/master/centerwithslots/{MISSION}/{COUNTRY}/{cat}/{CULTURE}"
-        status, slots = await _fetch_url(url)
-
-        if status == "SLOT":
-            logger.info(f"SLOT détecté avec {cat} — double vérification dans 5s...")
-            await asyncio.sleep(5)
-            status2, slots2 = await _fetch_url(url)
-            if status2 == "SLOT":
-                logger.info(f"✅ SLOT CONFIRMÉ après double vérification !")
-                return "SLOT", slots2
-            else:
-                logger.warning(f"Faux positif détecté — 1ère: SLOT, 2ème: {status2}")
-                return "no-slots", []
-
-        elif status == "no-slots":
-            return "no-slots", []
-
-        elif status in ("rate-limit", "backoff"):
-            if _last_valid_result and (time.time() - _last_valid_time) < 600:
-                logger.info(f"Cache utilisé (âge: {time.time() - _last_valid_time:.0f}s)")
-                return _last_valid_result["status"], _last_valid_result["slots"]
-            await asyncio.sleep(5)
-            continue
-        else:
-            continue
-            
-    if _last_valid_result and (time.time() - _last_valid_time) < 600:
-        return _last_valid_result["status"], _last_valid_result["slots"]
-
-    return "no-slots", []
 
 
 async def _fetch_slots() -> Tuple[str, list]:
     global _last_valid_result, _last_valid_time
-    status, slots = await _verify_slots()
 
-    if status in ("SLOT", "no-slots"):
-        _last_valid_result = {"status": status, "slots": slots}
-        _last_valid_time = time.time()
+    for cat in CATEGORIES:
+        url = f"{LIFT_API}/master/centerwithslots/{MISSION}/{COUNTRY}/{cat}/{CULTURE}"
+        status, slots = await _fetch_url(url)
+        logger.info(f"cat={cat} → {status} | {len(slots)} slots")
 
-    return status, slots
+        if status == "SLOT":
+            _last_valid_result = {"status": "SLOT", "slots": slots}
+            _last_valid_time = time.time()
+            return "SLOT", slots
+
+        elif status == "no-slots":
+            _last_valid_result = {"status": "no-slots", "slots": []}
+            _last_valid_time = time.time()
+            return "no-slots", []
+
+        elif status in ("rate-limit", "block"):
+            # Utiliser le cache si disponible et récent
+            if _last_valid_result and (time.time() - _last_valid_time) < CACHE_TTL:
+                age = int(time.time() - _last_valid_time)
+                logger.info(f"Cache utilisé (âge: {age}s) suite à {status}")
+                return _last_valid_result["status"], _last_valid_result["slots"]
+            await asyncio.sleep(5)
+            continue
+
+        else:
+            continue
+
+    # Dernier recours — cache
+    if _last_valid_result and (time.time() - _last_valid_time) < CACHE_TTL:
+        logger.info("Cache utilisé en dernier recours")
+        return _last_valid_result["status"], _last_valid_result["slots"]
+
+    return "no-slots", []
 
 
 async def check_all_centers() -> dict:
